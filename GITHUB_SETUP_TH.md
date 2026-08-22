@@ -115,3 +115,21 @@ sudo ./install.sh
 ```
 
 `install.sh` จะติดตั้ง `ttuhelper.sh` รุ่นใหม่ทับ `/usr/local/bin/ttuhelper` แต่จะไม่แตะ `/usr/local/bin/tthelper` ของระบบเก่า
+
+
+## อัปเดตสอง repository ด้วยคำสั่งเดียว
+
+หลังจากสร้างและ push ทั้ง `ttuhelper` และ `sntalkbot` ครั้งแรกสำเร็จแล้ว สามารถใช้:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\git_sync_both.ps1
+```
+
+ค่าเริ่มต้นสคริปต์มองหา:
+
+```text
+D:\ttuhelper
+D:\sntalkbot
+```
+
+มันจะ add/commit เฉพาะเมื่อมีการเปลี่ยนแปลง จากนั้น `git pull --rebase` และ `git push` ให้ทั้งสอง repo อัตโนมัติ รายละเอียดอยู่ใน `GIT_AUTO_SYNC_TH.md`

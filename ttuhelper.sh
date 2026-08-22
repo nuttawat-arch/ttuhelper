@@ -7,10 +7,18 @@ if [[ -r "$CONFIG_FILE" ]]; then
   . "$CONFIG_FILE"
 fi
 
-IMAGE_REPO="${TTU_IMAGE_REPO:-nuttawat0295/ttmediabot-th}"
+IMAGE_REPO="${TTU_IMAGE_REPO:-nuttawat0295/sntalkbot}"
 IMAGE_TAG="${TTU_TAG:-latest}"
 IMAGE_NAME="${IMAGE_REPO}:${IMAGE_TAG}"
-BOTS_ROOT="${TTU_BOTS_ROOT:-/opt/ttutilities-bots}"
+LEGACY_BOTS_ROOT="/opt/ttutilities-bots"
+DEFAULT_BOTS_ROOT="/opt/sntalkbot-bots"
+if [[ -n "${TTU_BOTS_ROOT:-}" ]]; then
+  BOTS_ROOT="$TTU_BOTS_ROOT"
+elif [[ -d "$LEGACY_BOTS_ROOT" && ! -e "$DEFAULT_BOTS_ROOT" ]]; then
+  BOTS_ROOT="$LEGACY_BOTS_ROOT"
+else
+  BOTS_ROOT="$DEFAULT_BOTS_ROOT"
+fi
 LABEL_KEY="com.ttutilities.helper"
 LABEL_VALUE="true"
 BOT_LABEL="com.ttutilities.bot"

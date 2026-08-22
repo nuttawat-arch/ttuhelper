@@ -1,11 +1,11 @@
 # TTUtilities Docker Helper (ttuhelper) — จัดการหลายบอตบน Linux ด้วย Docker
 
-โฟลเดอร์นี้เป็นฝั่งที่ติดตั้งบน **Ubuntu/Debian Server** หลังจาก image ของ `01-DockerHub-Image` ถูก push ไปที่ Docker Hub แล้ว ตัว helper ใช้ Docker image เดียวสร้างบอตได้หลาย instance โดยแต่ละ instance มี `config.ini`, `cookies.txt`, log/cache/favorites และ PulseAudio ภายใน container ของตัวเอง จึงใช้บอตตัวเดียวกันกับ TeamTalk หลายเซิร์ฟเวอร์หรือหลายห้องได้โดยไม่ต้องทำหลาย profile ในโปรแกรมหลัก
+โฟลเดอร์นี้เป็นฝั่งที่ติดตั้งบน **Ubuntu/Debian Server** หลังจาก image ของ `01-SNTalkBot-DockerHub-Image` ถูก push ไปที่ Docker Hub แล้ว ตัว helper ใช้ Docker image เดียวสร้างบอตได้หลาย instance โดยแต่ละ instance มี `config.ini`, `cookies.txt`, log/cache/favorites และ PulseAudio ภายใน container ของตัวเอง จึงใช้บอตตัวเดียวกันกับ TeamTalk หลายเซิร์ฟเวอร์หรือหลายห้องได้โดยไม่ต้องทำหลาย profile ในโปรแกรมหลัก
 
 ค่าเริ่มต้นใช้ image:
 
 ```text
-nuttawat0295/ttmediabot-th:latest
+nuttawat0295/sntalkbot:latest
 ```
 
 เหตุผลที่คง repository นี้ไว้เป็นค่าเริ่มต้น เพราะ helper เดิมของคุณใช้อยู่แล้ว ถ้าจะเปลี่ยน repository/tag ให้แก้ `/etc/default/ttuhelper`
@@ -16,7 +16,7 @@ nuttawat0295/ttmediabot-th:latest
 
 ```text
 เก่า: tthelper   -> ปล่อยไว้ให้บอต/ระบบเก่าใช้ต่อ
-ใหม่: ttuhelper  -> ใช้จัดการ TTUtilities Unified
+ใหม่: ttuhelper  -> ใช้จัดการ SN TalkBot
 ```
 
 ตัวติดตั้งใหม่ **ไม่ลบ ไม่เขียนทับ และไม่สร้าง alias ของ `/usr/local/bin/tthelper`** ถ้าพบของเก่า จะเพียงแจ้งว่าพบแล้วและปล่อยไว้ตามเดิม
@@ -36,7 +36,7 @@ nuttawat0295/ttmediabot-th:latest
 sudo ./install.sh
 ```
 
-คำสั่งเดียวนี้จะติดตั้ง Docker หากยังไม่มี, เปิด Docker service, ติดตั้ง `ttuhelper` เป็นคำสั่ง global ที่ `/usr/local/bin/ttuhelper`, สร้างพื้นที่ `/opt/ttutilities-bots`, สร้าง `/etc/default/ttuhelper` ในการติดตั้งครั้งแรก และ pull image จาก Docker Hub ให้เสร็จ หากรัน `install.sh` ซ้ำเพื่ออัปเดต helper จะเก็บ `/etc/default/ttuhelper` เดิมไว้ไม่ทับค่า repository/tag ที่คุณตั้งเอง
+คำสั่งเดียวนี้จะติดตั้ง Docker หากยังไม่มี, เปิด Docker service, ติดตั้ง `ttuhelper` เป็นคำสั่ง global ที่ `/usr/local/bin/ttuhelper`, สร้างพื้นที่ `/opt/sntalkbot-bots`, สร้าง `/etc/default/ttuhelper` ในการติดตั้งครั้งแรก และ pull image จาก Docker Hub ให้เสร็จ หากรัน `install.sh` ซ้ำเพื่ออัปเดต helper จะเก็บ `/etc/default/ttuhelper` เดิมไว้ไม่ทับค่า repository/tag ที่คุณตั้งเอง
 
 หลังจากนั้นไม่ต้อง `cd` กลับมาโฟลเดอร์ helper อีก เรียก `sudo ttuhelper ...` ได้จากทุกที่
 
@@ -67,7 +67,7 @@ server_management_enabled = True/False
 โฟลเดอร์แต่ละ instance อยู่ที่:
 
 ```text
-/opt/ttutilities-bots/<ชื่อบอต>/
+/opt/sntalkbot-bots/<ชื่อบอต>/
 ```
 
 ## เริ่มบอต
@@ -115,7 +115,7 @@ ttuhelper help                แสดง help
 1. จำรายชื่อ instance ที่กำลังรัน
 2. `docker pull` image/tag ล่าสุด
 3. recreate container แต่ละตัวด้วย image ใหม่
-4. mount โฟลเดอร์ `/opt/ttutilities-bots/<name>` เดิมกลับเข้าไป
+4. mount โฟลเดอร์ `/opt/sntalkbot-bots/<name>` เดิมกลับเข้าไป
 
 config, cookies, favorites, cache และ log จึงยังอยู่ แต่ runtime code/dependency มาจาก image ชุดเดียวกันทั้งหมด
 
@@ -146,9 +146,9 @@ sudo nano /etc/default/ttuhelper
 ตัวอย่าง:
 
 ```text
-TTU_IMAGE_REPO="nuttawat0295/ttmediabot-th"
+TTU_IMAGE_REPO="nuttawat0295/sntalkbot"
 TTU_TAG="latest"
-TTU_BOTS_ROOT="/opt/ttutilities-bots"
+TTU_BOTS_ROOT="/opt/sntalkbot-bots"
 ```
 
 จากนั้น:
@@ -207,12 +207,12 @@ music-room-3      -> Player Bot     -> อยู่ห้อง Music 3
 
 ### ฝั่งเครื่อง build image
 
-1. เข้าโฟลเดอร์ `01-DockerHub-Image`
+1. เข้าโฟลเดอร์ `01-SNTalkBot-DockerHub-Image`
 2. ล็อกอิน Docker Hub
 3. สั่ง publish
 
 ```bash
-cd 01-DockerHub-Image
+cd 01-SNTalkBot-DockerHub-Image
 docker login
 ./publish.sh
 ```
@@ -220,7 +220,7 @@ docker login
 ถ้าต้องการปล่อยเป็นเวอร์ชันเฉพาะ เช่น `2026.08.22-mode`:
 
 ```bash
-TTU_IMAGE_REPO=nuttawat0295/ttmediabot-th TTU_TAG=2026.08.22-mode ./publish.sh
+TTU_IMAGE_REPO=nuttawat0295/sntalkbot TTU_TAG=2026.08.22-mode ./publish.sh
 ```
 
 ### ฝั่งเซิร์ฟเวอร์จริง
@@ -247,9 +247,9 @@ sudo nano /etc/default/ttuhelper
 ตัวอย่าง:
 
 ```text
-TTU_IMAGE_REPO="nuttawat0295/ttmediabot-th"
+TTU_IMAGE_REPO="nuttawat0295/sntalkbot"
 TTU_TAG="2026.08.22-mode"
-TTU_BOTS_ROOT="/opt/ttutilities-bots"
+TTU_BOTS_ROOT="/opt/sntalkbot-bots"
 ```
 
 4. pull image ที่ตั้งค่าไว้
