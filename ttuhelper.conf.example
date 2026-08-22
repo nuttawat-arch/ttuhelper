@@ -1,0 +1,3 @@
+TTU_IMAGE_REPO="nuttawat0295/ttmediabot-th"
+TTU_TAG="latest"
+TTU_BOTS_ROOT="/opt/ttutilities-bots"

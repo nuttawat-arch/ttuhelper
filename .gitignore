@@ -1,0 +1,32 @@
+# Local/editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Local test/output files
+*.log
+*.tmp
+*.bak
+coverage/
+.pytest_cache/
+__pycache__/
+
+# Never commit credentials or instance data
+.env
+.env.*
+!.env.example
+cookies.txt
+config.ini
+instances/
+bots/
+data/
+
+# Generated archives/checksums
+*.zip
+*.tar
+*.tar.gz
+*.sha256
