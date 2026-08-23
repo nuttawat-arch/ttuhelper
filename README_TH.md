@@ -65,6 +65,7 @@ sudo ttuhelper run <ชื่อบอต>
 | `ttuhelper stop-all` | หยุด container ทุกตัวโดยไม่ลบข้อมูลถาวร |
 | `ttuhelper pull` | ดาวน์โหลด Docker image/tag ที่ตั้งไว้ |
 | `ttuhelper update` | pull image ใหม่ แล้วอัปเดตเฉพาะ instance ที่กำลังรัน โดยรักษาข้อมูลเดิม |
+| `ttuhelper migrate-ttmediabot [path]` | ย้าย TTMediaBot Docker Helper `config.json` v1 ไป SNTalkBot ใหม่ |
 | `ttuhelper cks <name>` | แทนที่ `cookies.txt` ของ instance หนึ่งตัว |
 | `ttuhelper cks-all` | ใส่ cookies ชุดเดียวให้ทุก instance |
 | `ttuhelper limit <name>` | ตั้งข้อจำกัด CPU/RAM มีผลหลัง restart |
@@ -73,6 +74,24 @@ sudo ttuhelper run <ชื่อบอต>
 | `ttuhelper doctor` | ตรวจ Docker daemon, image, data root และค่าหลักของ helper |
 | `ttuhelper version` | แสดงเวอร์ชัน TTUHelper |
 | `ttuhelper help` | แสดงคำอธิบายคำสั่งทั้งหมด |
+
+## ย้ายจาก TTMediaBot Docker Helper เก่า
+
+รองรับเฉพาะโครงสร้าง TTMediaBot Docker Helper ที่แต่ละโฟลเดอร์มี `config.json` แบบ `config_version: 1` ไม่รองรับโปรเจกต์เก่าทุกชนิด
+
+```bash
+sudo ttuhelper migrate-ttmediabot
+```
+
+ค่าเริ่มต้นจะถามหา `/opt/ttmediabot-docker-helper` แล้วให้เลือกว่าจะนำเข้าทุกตัวเป็น Player, Server Manager, Full หรือเลือกทีละตัว ระบบสร้าง `config.ini` ใหม่ใน `/opt/sntalkbot-bots`, คัดลอก `cookies.txt` และสามารถแทน container เดิมด้วย SNTalkBot image ล่าสุดได้ทันที โดยไม่ลบโฟลเดอร์ TTMediaBot เก่า
+
+ทดลองตรวจอย่างเดียว:
+
+```bash
+sudo ttuhelper migrate-ttmediabot /opt/ttmediabot-docker-helper --dry-run
+```
+
+อ่านรายละเอียด: `MIGRATE_TTMEDIABOT_TH.md`
 
 ## ดู log
 

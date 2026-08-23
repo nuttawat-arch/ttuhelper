@@ -48,6 +48,8 @@ if [[ -e /usr/local/bin/tthelper ]]; then
   echo "Old command /usr/local/bin/tthelper detected; leaving it untouched."
 fi
 install -m 0755 ttuhelper.sh /usr/local/bin/ttuhelper
+install -d -m 0755 /usr/local/lib/ttuhelper
+install -m 0755 tools/migrate_ttmediabot.py /usr/local/lib/ttuhelper/migrate_ttmediabot.py
 mkdir -p "$BOTS_ROOT"
 chmod 0755 "$BOTS_ROOT"
 
@@ -76,3 +78,4 @@ echo "Installation complete."
 echo "Create the first instance with: sudo ttuhelper new"
 echo "Then start it with: sudo ttuhelper run <name>"
 echo "Check the helper with: sudo ttuhelper doctor"
+echo "Migrate legacy TTMediaBot config v1 with: sudo ttuhelper migrate-ttmediabot"

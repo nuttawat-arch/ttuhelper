@@ -1,3 +1,10 @@
+# TTUHelper 1.3.0
+
+- เพิ่ม `ttuhelper migrate-ttmediabot [path]` สำหรับย้ายเฉพาะ TTMediaBot Docker Helper `config.json` v1
+- เลือกโหมด Player / Server Manager / Full แบบทั้งชุดหรือทีละบอตได้
+- แปลง config เป็น `config.ini` ล่าสุดจาก Docker image, คัดลอก cookies และเก็บ source เก่าไว้เป็น backup
+- เพิ่ม `--dry-run` และสำรอง destination เดิมก่อนแทนที่
+
 # TTUHelper 1.2.0
 
 - เปลี่ยนชื่อในข้อความ help เป็น SNTalkBot Docker Helper (TTUHelper)

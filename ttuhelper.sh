@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.2.0"
+HELPER_VERSION="1.3.0"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -24,6 +24,11 @@ LABEL_KEY="com.ttutilities.helper"
 LABEL_VALUE="true"
 BOT_LABEL="com.ttutilities.bot"
 DATA_LABEL="com.ttutilities.data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIGRATOR_PATH="${TTU_MIGRATOR_PATH:-/usr/local/lib/ttuhelper/migrate_ttmediabot.py}"
+if [[ ! -f "$MIGRATOR_PATH" && -f "$SCRIPT_DIR/tools/migrate_ttmediabot.py" ]]; then
+  MIGRATOR_PATH="$SCRIPT_DIR/tools/migrate_ttmediabot.py"
+fi
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -400,6 +405,92 @@ update_running() {
   say "Updated $count running instance(s). Persistent data/config was preserved."
 }
 
+migrate_ttmediabot() {
+  local source="" dry_run=0 arg tmp names_file answer count=0 name
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
+    case "$arg" in
+      --dry-run) dry_run=1 ;;
+      -h|--help)
+        cat <<'MIGHELP'
+Usage: sudo ttuhelper migrate-ttmediabot [legacy-root] [--dry-run]
+
+Imports only the legacy TTMediaBot Docker Helper layout where each bot folder
+contains config.json with config_version=1. This is not a generic importer for
+other old bot projects.
+MIGHELP
+        return 0
+        ;;
+      --*) fail "Unknown migrate option: $arg" ;;
+      *)
+        [[ -z "$source" ]] || fail "Only one legacy root path may be supplied."
+        source="$arg"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$source" ]]; then
+    read -rp "Legacy TTMediaBot root (default: /opt/ttmediabot-docker-helper): " source
+    source="${source:-/opt/ttmediabot-docker-helper}"
+  fi
+  [[ -d "$source" ]] || fail "Legacy TTMediaBot root not found: $source"
+  [[ -f "$MIGRATOR_PATH" ]] || fail "Migration tool not installed: $MIGRATOR_PATH. Re-run TTUHelper install.sh."
+
+  say "This importer supports only TTMediaBot Docker Helper config.json v1 folders."
+  say "It does not claim compatibility with other legacy bot projects."
+  say "Original TTMediaBot folders are left unchanged as a backup."
+  say "Pulling current bot image before migration: $IMAGE_NAME"
+  pull_image
+
+  tmp="$(mktemp -d)"
+  docker run --rm --entrypoint cat "$IMAGE_NAME" /app/config_default.ini > "$tmp/config_default.ini"
+  [[ -s "$tmp/config_default.ini" ]] || fail "Could not read /app/config_default.ini from $IMAGE_NAME"
+  names_file="$tmp/imported-names.txt"
+
+  local -a migrate_args=(
+    "$MIGRATOR_PATH"
+    --source "$source"
+    --dest-root "$BOTS_ROOT"
+    --template "$tmp/config_default.ini"
+    --mode prompt
+    --names-file "$names_file"
+  )
+  if [[ "$dry_run" == "1" ]]; then migrate_args+=(--dry-run); fi
+  python3 "${migrate_args[@]}"
+
+  if [[ "$dry_run" == "1" ]]; then
+    say "Dry run complete. No bot data or containers were changed."
+    return 0
+  fi
+
+  [[ -s "$names_file" ]] || fail "Migration completed without an imported-name list."
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    chown -R 10001:10001 "$(bot_dir "$name")"
+    chmod 0750 "$(bot_dir "$name")"
+    count=$((count+1))
+  done < "$names_file"
+
+  say "Imported $count instance(s) into $BOTS_ROOT."
+  read -rp "Start/restart all imported bots now using $IMAGE_NAME? [Y/n]: " answer
+  case "${answer,,}" in
+    n|no)
+      say "Migration data is ready. Start later with: sudo ttuhelper start-all"
+      ;;
+    *)
+      while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        say "Replacing any old container named '$name' and starting SNTalkBot ..."
+        run_bot "$name" 1
+      done < "$names_file"
+      say "All imported bots were started/restarted with $IMAGE_NAME."
+      ;;
+  esac
+  say "Keep the old TTMediaBot root until you have verified every migrated bot."
+  rm -rf "$tmp"
+}
+
 doctor() {
   say "SNTalkBot Docker Helper (TTUHelper)"
   say "Image: $IMAGE_NAME"
@@ -408,6 +499,7 @@ doctor() {
   say "Docker: $(docker --version 2>&1 || true)"
   if docker info >/dev/null 2>&1; then say "Docker daemon: OK"; else say "Docker daemon: NOT AVAILABLE"; fi
   if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then say "Image local: YES"; else say "Image local: NO (run: sudo ttuhelper pull)"; fi
+  if [[ -f "$MIGRATOR_PATH" ]]; then say "TTMediaBot migrator: YES"; else say "TTMediaBot migrator: NO (re-run install.sh)"; fi
 }
 
 usage() {
@@ -428,6 +520,7 @@ Data root: $BOTS_ROOT
   ttuhelper stop-all            หยุด container ทุกตัวที่ TTUHelper จัดการ โดยไม่ลบข้อมูลถาวร
   ttuhelper pull                ดาวน์โหลด Docker image/tag ที่ตั้งไว้ใน /etc/default/ttuhelper
   ttuhelper update              pull image ใหม่ แล้วสร้างใหม่เฉพาะ instance ที่กำลังรัน โดยเก็บข้อมูลเดิม
+  ttuhelper migrate-ttmediabot [path]  ย้ายเฉพาะ TTMediaBot Docker Helper config.json v1 ไป SNTalkBot ใหม่ (alias: import-ttmediabot)
   ttuhelper cks <name>          แทนที่ cookies.txt ของ instance หนึ่งตัว
   ttuhelper cks-all             ใส่ cookies ชุดเดียวให้ทุก instance
   ttuhelper limit <name>        ตั้งข้อจำกัด CPU/RAM ของ instance แล้วใช้หลัง restart
@@ -471,6 +564,7 @@ main() {
     stop-all) stop_all ;;
     pull) pull_image ;;
     update) update_running ;;
+    migrate-ttmediabot|import-ttmediabot) migrate_ttmediabot "$@" ;;
     cks) update_cookies "${1:-}" ;;
     cks-all) update_all_cookies ;;
     limit) set_limits "${1:-}" ;;

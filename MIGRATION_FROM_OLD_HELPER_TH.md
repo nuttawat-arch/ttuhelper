@@ -1,4 +1,8 @@
-# สิ่งที่เปลี่ยนจาก TTMediaBot Docker Helper เดิม
+# การย้ายจากระบบเก่า
+
+ถ้าต้องการย้าย **TTMediaBot Docker Helper ที่มี `config.json` v1** แบบอัตโนมัติ ให้ใช้ `ttuhelper migrate-ttmediabot` และอ่าน `MIGRATE_TTMEDIABOT_TH.md`
+
+หมายเหตุ: ตัวนำเข้านี้รองรับเฉพาะ TTMediaBot Docker Helper รูปแบบที่ระบุ ไม่ใช่โปรเจกต์บอตเก่าทุกแบบ
 
 ## Config
 

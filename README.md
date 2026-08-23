@@ -133,3 +133,14 @@ sudo ttuhelper update
 - TTUHelper: https://github.com/nuttawat-arch/ttuhelper
 - Docker Hub: https://hub.docker.com/r/nuttawat0295/sntalkbot
 - Download: https://ttdl.nuttawat.ddnsfree.com
+
+
+## Legacy TTMediaBot migration
+
+TTUHelper 1.3.0 can import only the legacy TTMediaBot Docker Helper layout where each bot directory contains a `config.json` with `config_version: 1`. It is not a generic importer for unrelated legacy bot projects.
+
+```bash
+sudo ttuhelper migrate-ttmediabot /opt/ttmediabot-docker-helper
+```
+
+The importer creates current `config.ini` instances under `/opt/sntalkbot-bots`, copies `cookies.txt`, preserves the old source tree as a backup, and can restart the imported names with the current SNTalkBot image. See `MIGRATE_TTMEDIABOT_TH.md` for the detailed Thai guide.
