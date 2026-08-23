@@ -1,5 +1,5 @@
 param(
-    [string]$HelperPath = "D:\SNTalkBot-Complete-Package\ttuhelper",
+    [string]$HelperPath = "D:\ttuhelper",
     [string]$MainPath = "D:\SNTalkBot-Complete-Package\sntalkbot",
     [string]$Message = ""
 )
@@ -22,7 +22,7 @@ function Invoke-Git([string]$RepoPath, [string[]]$Arguments) {
 
 function Sync-Repository([string]$RepoPath, [string]$Label, [string]$CommitMessage) {
     if (-not (Test-Path -LiteralPath $RepoPath -PathType Container)) {
-        Write-Warning "$Label folder not found: $RepoPath -- skipping."
+        Write-Host "$Label folder not found: $RepoPath -- skipping."
         return
     }
     if (-not (Test-Path -LiteralPath (Join-Path $RepoPath ".git") -PathType Container)) {

@@ -20,7 +20,14 @@ else
 fi
 
 echo "Installing Docker/helper dependencies..."
-apt-get update
+if ! apt-get update; then
+  echo >&2
+  echo "APT update failed." >&2
+  echo "If APT says a repository changed Origin/Label/Suite, review the repository and run:" >&2
+  echo "  sudo apt-get update --allow-releaseinfo-change" >&2
+  echo "Then run this installer again." >&2
+  exit 1
+fi
 apt-get install -y ca-certificates curl gnupg python3 nano
 
 if ! command -v docker >/dev/null 2>&1; then

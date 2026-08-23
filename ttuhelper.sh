@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+HELPER_VERSION="1.2.0"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -400,7 +401,7 @@ update_running() {
 }
 
 doctor() {
-  say "TTUtilities Docker Helper (ttuhelper)"
+  say "SNTalkBot Docker Helper (TTUHelper)"
   say "Image: $IMAGE_NAME"
   say "Bots root: $BOTS_ROOT"
   say "Python: $(python3 --version 2>&1 || true)"
@@ -411,31 +412,35 @@ doctor() {
 
 usage() {
   cat <<EOF2
-TTUtilities Docker Helper (ttuhelper)
+SNTalkBot Docker Helper (TTUHelper)
 Image: $IMAGE_NAME
 Data root: $BOTS_ROOT
 
-Usage:
-  ttuhelper new                 Create a new independent bot instance (Full / Player / Server Manager)
-  ttuhelper run <name>          Start/recreate an instance from its persistent folder
-  ttuhelper stop <name>         Stop/remove container; keep config/data
-  ttuhelper restart <name>      Recreate one instance
-  ttuhelper logs <name>         Follow Docker logs
-  ttuhelper ls                  List all instance folders and status
-  ttuhelper ps                  List helper-managed containers
-  ttuhelper start-all           Start every configured instance
-  ttuhelper stop-all            Stop/remove every helper-managed container
-  ttuhelper pull                Pull the configured Docker image
-  ttuhelper update              Pull latest image and recreate all currently running instances
-  ttuhelper cks <name>          Replace cookies.txt for one instance
-  ttuhelper cks-all             Replace cookies.txt for every instance
-  ttuhelper limit <name>        Set CPU/RAM limits for one instance
-  ttuhelper edit <name>         Edit one instance config.ini with \$EDITOR (default nano)
-  ttuhelper path <name>         Print the persistent folder path
-  ttuhelper doctor              Check Docker/helper settings
-  ttuhelper help                Show this help
+คำสั่ง:
+  ttuhelper new                 สร้างบอต instance ใหม่และเลือกโหมด Full / Player / Server Manager
+  ttuhelper run <name>          เริ่มบอตจาก config/data เดิม; ถ้ามี container ที่หยุดอยู่จะสร้างใหม่
+  ttuhelper stop <name>         หยุดและลบ container แต่เก็บ config/data ของบอตไว้
+  ttuhelper restart <name>      รีสตาร์ตบอตหนึ่งตัวโดยสร้าง container ใหม่จาก image ที่กำหนด
+  ttuhelper logs <name>         ดูบันทึกการทำงานแบบสด; กด Ctrl+C เพื่อออกจากหน้าดู log
+  ttuhelper ls                  ดูรายชื่อ instance ทั้งหมดพร้อมสถานะ running/stopped
+  ttuhelper ps                  ดู container ที่ TTUHelper จัดการ พร้อมสถานะและ image ที่ใช้อยู่
+  ttuhelper start-all           เริ่มทุก instance ที่มี config.ini
+  ttuhelper stop-all            หยุด container ทุกตัวที่ TTUHelper จัดการ โดยไม่ลบข้อมูลถาวร
+  ttuhelper pull                ดาวน์โหลด Docker image/tag ที่ตั้งไว้ใน /etc/default/ttuhelper
+  ttuhelper update              pull image ใหม่ แล้วสร้างใหม่เฉพาะ instance ที่กำลังรัน โดยเก็บข้อมูลเดิม
+  ttuhelper cks <name>          แทนที่ cookies.txt ของ instance หนึ่งตัว
+  ttuhelper cks-all             ใส่ cookies ชุดเดียวให้ทุก instance
+  ttuhelper limit <name>        ตั้งข้อจำกัด CPU/RAM ของ instance แล้วใช้หลัง restart
+  ttuhelper edit <name>         เปิด config.ini ของ instance ด้วย editor; ค่าเริ่มต้นคือ nano
+  ttuhelper path <name>         แสดงตำแหน่งโฟลเดอร์ config/data ของ instance
+  ttuhelper doctor              ตรวจ Docker daemon, image, data root และค่าหลักของ helper
+  ttuhelper version             แสดงเวอร์ชัน TTUHelper
+  ttuhelper help                แสดงคำอธิบายคำสั่งนี้
 
-Environment/config overrides:
+ไฟล์ตั้งค่ากลาง:
+  /etc/default/ttuhelper
+
+ค่าที่เปลี่ยนได้:
   TTU_IMAGE_REPO               Default: $IMAGE_REPO
   TTU_TAG                      Default: $IMAGE_TAG
   TTU_BOTS_ROOT                Default: $BOTS_ROOT
@@ -444,12 +449,16 @@ EOF2
 }
 
 main() {
-  need_root "${*:-}"
-  ensure_layout
-  ensure_docker_running
-  ensure_python
   local cmd="${1:-help}"
   shift || true
+  if [[ "$cmd" == "help" || "$cmd" == "-h" || "$cmd" == "--help" || -z "$cmd" || "$cmd" == "version" || "$cmd" == "-v" || "$cmd" == "--version" ]]; then
+    :
+  else
+    need_root "$cmd ${*:-}"
+    ensure_layout
+    ensure_docker_running
+    ensure_python
+  fi
   case "$cmd" in
     new) create_bot ;;
     run) run_bot "${1:-}" 0 ;;
@@ -468,6 +477,7 @@ main() {
     edit) edit_config "${1:-}" ;;
     path) show_path "${1:-}" ;;
     doctor) doctor ;;
+    version|-v|--version) echo "$HELPER_VERSION" ;;
     help|-h|--help|'') usage ;;
     *) usage; fail "Unknown command: $cmd" ;;
   esac
