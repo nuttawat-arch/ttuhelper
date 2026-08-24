@@ -1,3 +1,22 @@
+# TTUHelper 1.5.1
+
+## การเปลี่ยนแปลง
+
+- คงคำสั่งหลัก 22 คำสั่งและพฤติกรรม instance เดิมทั้งหมด; รุ่นนี้เน้น Linux/release hardening สำหรับการ deploy ร่วมกับ SNTalkBot 5.1.1 และ Web Manager 1.1.1
+- เพิ่ม validator ตรวจ LF-only สำหรับ Bash/Python/config/docs ที่ถูกใช้บน Linux เพื่อกัน `^M`/CRLF regression ก่อน publish
+- เพิ่มคู่มือ recovery เมื่อ `git pull --ff-only` พบ local changes ใน `/opt/ttuhelper`: ต้องบันทึก diff/สำรองก่อน แล้วค่อย reset ไป `origin/main` แทนการลบไฟล์หรือทับ config แบบสุ่ม
+- ยืนยัน `/etc/default/ttuhelper` และ `/opt/sntalkbot-bots/` เป็น persistent production state และ installer ไม่เขียนทับค่าที่มีอยู่
+
+## ปัญหาที่ตรวจพบจากรุ่นก่อน
+
+- บน production รอบ 1.5.0 `git pull --ff-only` หยุดเพราะ `install.sh` และ `ttuhelper.sh` มี local changes ค้างอยู่ แต่ `install.sh`, Docker pull และ `ttuhelper doctor` ที่รันจากไฟล์ปัจจุบันสำเร็จ
+
+## สถานะการตรวจ
+
+- ต้องผ่าน 22-command catalog, Bash syntax จริง, Docker/API allocator invariants และ LF-only check ก่อน publish
+
+---
+
 # TTUHelper 1.5.0
 
 - เพิ่ม `ttuhelper delete <name>`: CLI ต้องยืนยันชื่อ instance ตรงทุกตัวอักษรก่อนลบ; Web Manager ใช้ `--yes` ได้หลังยืนยันจากหน้าเว็บ และระบบสำรอง config/data แบบ root-only ก่อนลบ

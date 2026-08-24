@@ -92,7 +92,7 @@ CONF
   chmod 0644 /etc/default/ttuhelper
   say "Created /etc/default/ttuhelper"
 else
-  say "Keeping existing /etc/default/ttuhelper settings and adding only missing 1.5 defaults."
+  say "Keeping existing /etc/default/ttuhelper settings and adding only missing 1.5.x defaults."
   grep -q '^TTU_API_PORT_MIN=' /etc/default/ttuhelper || printf '%s\n' 'TTU_API_PORT_MIN="20000"' >> /etc/default/ttuhelper
   grep -q '^TTU_API_PORT_MAX=' /etc/default/ttuhelper || printf '%s\n' 'TTU_API_PORT_MAX="27999"' >> /etc/default/ttuhelper
   # shellcheck disable=SC1091

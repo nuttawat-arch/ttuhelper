@@ -199,3 +199,20 @@ sudo ttuhelper update
 ## YouTube cookies
 
 ดูขั้นตอนแบบละเอียดใน `YOUTUBE_COOKIES_TH.md` SNTalkBot มี default cookie bootstrap ให้ Player/Full; `ttuhelper cks` ใช้แทน `/app/data/cookies.txt` ด้วยชุดของผู้ใช้ใน persistent data โดยไม่ถูก default overwrite
+
+## ถ้า `git pull --ff-only` แจ้ง local changes
+
+อย่าลบ `/opt/ttuhelper` หรือ `/opt/sntalkbot-bots` ทิ้งทันที ให้ตรวจและสำรองก่อน:
+
+```bash
+cd /opt/ttuhelper
+git status --short
+git diff -- install.sh ttuhelper.sh | sudo tee /root/ttuhelper-local-before-reset.diff >/dev/null
+sudo cp -a /opt/ttuhelper /root/ttuhelper-source-backup-$(date +%Y%m%d-%H%M%S)
+git fetch origin
+git reset --hard origin/main
+sudo ./install.sh
+sudo ttuhelper doctor
+```
+
+คำสั่ง `git reset --hard` ด้านบนกระทบเฉพาะ Git working tree `/opt/ttuhelper`; ไม่แตะ `/etc/default/ttuhelper` และไม่แตะข้อมูล instance ใน `/opt/sntalkbot-bots/`

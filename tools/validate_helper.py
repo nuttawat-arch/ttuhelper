@@ -96,4 +96,17 @@ if bash:
             detail=(proc.stderr or proc.stdout or '').strip()
             if detail:
                 print(f'[DETAIL] {file.name}: {detail}')
+# Linux release files must remain LF-only.  This catches Windows checkout/ZIP
+# regressions before they become /bin/bash ^M failures on the server.
+crlf=[]
+for path in ROOT.rglob('*'):
+    if not path.is_file() or '.git' in path.parts or '__pycache__' in path.parts:
+        continue
+    if path.suffix.lower() not in {'.sh','.py','.md','.txt','.conf','.example'} and path.name not in {'VERSION','.gitattributes'}:
+        continue
+    if b'\r\n' in path.read_bytes():
+        crlf.append(str(path.relative_to(ROOT)))
+need(not crlf, 'Linux/helper source line endings are LF-only')
+if crlf:
+    print('[DETAIL] CRLF files: '+', '.join(crlf[:12]))
 raise SystemExit(1 if errors else 0)
