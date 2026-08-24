@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.5.1"
+HELPER_VERSION="1.5.2"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -48,6 +48,25 @@ validate_name() {
 }
 
 bot_dir() { printf '%s/%s' "$BOTS_ROOT" "$1"; }
+
+container_labels() {
+  local name="$1"
+  docker inspect -f '{{ index .Config.Labels "com.ttutilities.helper" }}|{{ index .Config.Labels "com.ttutilities.bot" }}|{{ index .Config.Labels "com.ttutilities.data" }}' "$name" 2>/dev/null || true
+}
+
+container_is_managed() {
+  local name="$1" dir labels
+  dir="$(bot_dir "$name")"
+  labels="$(container_labels "$name")"
+  [[ "$labels" == "$LABEL_VALUE|$name|$dir" ]]
+}
+
+refuse_unmanaged_collision() {
+  local name="$1"
+  if docker container inspect "$name" >/dev/null 2>&1 && ! container_is_managed "$name"; then
+    fail "Refusing to touch Docker container '$name': the name is already used by a container not managed by TTUHelper. Choose a different SNTalkBot instance name or resolve the Docker name collision manually."
+  fi
+}
 
 conf_get() {
   local file="$1" key="$2"
@@ -333,6 +352,7 @@ run_bot() {
   [[ -d "$dir" && -f "$dir/config.ini" ]] || fail "Instance '$name' not found in $BOTS_ROOT"
   ensure_image
 
+  refuse_unmanaged_collision "$name"
   if docker container inspect "$name" >/dev/null 2>&1; then
     if [[ "$force" == "1" ]]; then
       docker rm -f "$name" >/dev/null
@@ -379,6 +399,7 @@ run_bot() {
 stop_bot() {
   local name="$1"
   [[ -n "$name" ]] || fail "Usage: ttuhelper stop <name>"
+  refuse_unmanaged_collision "$name"
   if docker container inspect "$name" >/dev/null 2>&1; then
     docker rm -f "$name" >/dev/null
     say "Stopped and removed container '$name'. Persistent data was kept."
@@ -408,6 +429,7 @@ delete_bot() {
     read -rp "Type the exact instance name '$name' to confirm: " answer
     [[ "$answer" == "$name" ]] || fail "Delete cancelled."
   fi
+  refuse_unmanaged_collision "$name"
   if docker container inspect "$name" >/dev/null 2>&1; then
     docker rm -f "$name" >/dev/null
   fi
@@ -422,8 +444,14 @@ delete_bot() {
 }
 
 logs_bot() {
-  local name="$1"
+  local name="$1" dir
   [[ -n "$name" ]] || fail "Usage: ttuhelper logs <name>"
+  validate_name "$name"
+  dir="$(bot_dir "$name")"
+  [[ -d "$dir" && -f "$dir/config.ini" ]] || fail "Instance '$name' not found in $BOTS_ROOT"
+  refuse_unmanaged_collision "$name"
+  docker container inspect "$name" >/dev/null 2>&1 || fail "Container '$name' is not running/created."
+  container_is_managed "$name" || fail "Refusing logs for unmanaged Docker container '$name'."
   docker logs -f "$name"
 }
 
@@ -438,7 +466,11 @@ list_bots() {
     name="$(basename "$d")"
     status="stopped"
     if docker container inspect "$name" >/dev/null 2>&1; then
-      status="$(docker inspect -f '{{if .State.Running}}running{{else}}stopped{{end}}' "$name")"
+      if container_is_managed "$name"; then
+        status="$(docker inspect -f '{{if .State.Running}}running{{else}}stopped{{end}}' "$name")"
+      else
+        status="name-conflict-unmanaged"
+      fi
     fi
     printf '%s\t%s\n' "$name" "$status"
   done

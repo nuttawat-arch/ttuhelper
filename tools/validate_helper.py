@@ -41,6 +41,10 @@ need(re.search(r'delete\)\s+delete_bot\s+"\$\{1:-\}"\s+"\$\{2:-\}"', sh) is not 
 for token in ('Type the exact instance name', 'sntalkbot-deleted-backups', 'tar -C "$BOTS_ROOT" -czf "$backup"', 'chmod 0600 "$backup"', 'rm -rf --one-file-system -- "$real_dir"'):
     need(token in sh, f'delete safety invariant present: {token}')
 need('--yes' in sh, 'delete supports non-interactive --yes for the Web Manager after web confirmation')
+need('container_is_managed()' in sh and 'refuse_unmanaged_collision()' in sh, 'container operations verify TTUHelper ownership labels before destructive actions')
+need(sh.count('refuse_unmanaged_collision "$name"') >= 3, 'run/stop/delete guard against unmanaged Docker name collisions')
+need('Refusing logs for unmanaged Docker container' in sh, 'logs cannot expose a same-name non-TTUHelper Docker container')
+need('name-conflict-unmanaged' in sh, 'instance listing surfaces unmanaged Docker name collisions without touching them')
 # Installer preflight
 for token in ('has curl || missing+=(curl)','has python3 || missing+=(python3)','has flock || missing+=(util-linux)','if ! has docker','Docker command already exists; skipping Docker installation'):
     need(token in installer, f'installer preflight present: {token}')
@@ -96,6 +100,50 @@ if bash:
             detail=(proc.stderr or proc.stdout or '').strip()
             if detail:
                 print(f'[DETAIL] {file.name}: {detail}')
+
+# Linux runtime regression: a same-name Docker container that lacks TTUHelper
+# ownership labels must never be removed or have its logs exposed. This test uses
+# a fake docker executable and therefore does not touch the host Docker daemon.
+if os.name != 'nt' and bash:
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            t=Path(td); bindir=t/'bin'; bindir.mkdir(); bots=t/'bots'; inst=bots/'collision'; inst.mkdir(parents=True)
+            (inst/'config.ini').write_text('[server]\naddress=example\n', encoding='utf-8')
+            (inst/'instance.conf').write_text('image=nuttawat0295/sntalkbot:latest\n', encoding='utf-8')
+            marker=t/'docker-actions.log'
+            fake=bindir/'docker'
+            fake_script = """#!/usr/bin/env bash
+set -u
+printf '%s\\n' \"$*\" >> \"${TTU_TEST_MARKER:?}\"
+if [[ \"${1:-}\" == \"container\" && \"${2:-}\" == \"inspect\" ]]; then exit 0; fi
+if [[ \"${1:-}\" == \"inspect\" && \"${2:-}\" == \"-f\" ]]; then
+  if [[ \"${3:-}\" == *Config.Labels* ]]; then printf 'false|other-service|/srv/other\\n'; else printf 'true\\n'; fi
+  exit 0
+fi
+if [[ \"${1:-}\" == \"rm\" || \"${1:-}\" == \"logs\" ]]; then exit 0; fi
+exit 0
+"""
+            fake.write_text(fake_script, encoding='utf-8'); fake.chmod(0o755)
+            fake_systemctl=bindir/'systemctl'
+            fake_systemctl.write_text('#!/usr/bin/env bash\nexit 0\n', encoding='utf-8'); fake_systemctl.chmod(0o755)
+            env=os.environ.copy(); env.update({'PATH':str(bindir)+os.pathsep+env.get('PATH',''),'TTU_BOTS_ROOT':str(bots),'TTU_TEST_MARKER':str(marker),'TTU_HELPER_CONFIG':str(t/'missing.conf')})
+            results=[]
+            for args in (('stop','collision'),('restart','collision'),('delete','collision','--yes'),('logs','collision')):
+                cp=subprocess.run([bash,str(ROOT/'ttuhelper.sh'),*args],env=env,capture_output=True,text=True,timeout=15)
+                results.append(cp)
+            calls=marker.read_text(encoding='utf-8') if marker.exists() else ''
+            safe=all(cp.returncode != 0 and 'Refusing to touch Docker container' in (cp.stderr+cp.stdout) for cp in results)
+            safe=safe and '\nrm ' not in '\n'+calls and '\nlogs ' not in '\n'+calls and inst.is_dir()
+            need(safe, 'same-name unmanaged Docker container is refused by stop/restart/delete/logs without destructive Docker calls')
+            if not safe:
+                print('[DETAIL] fake docker calls:\n'+calls)
+                for cp in results: print('[DETAIL]',cp.returncode,cp.stdout,cp.stderr)
+    except Exception as exc:
+        need(False, f'unmanaged Docker collision runtime regression: {exc!r}')
+else:
+    print('[INFO] unmanaged Docker collision runtime regression deferred to Linux validator')
+
 # Linux release files must remain LF-only.  This catches Windows checkout/ZIP
 # regressions before they become /bin/bash ^M failures on the server.
 crlf=[]

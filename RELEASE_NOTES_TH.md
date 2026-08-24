@@ -1,3 +1,13 @@
+# TTUHelper 1.5.2
+
+## การเปลี่ยนแปลง
+
+- เพิ่ม Docker ownership guard ก่อน `run`, `stop`, `restart`, `delete` และ `logs` เพื่อไม่แตะ container ของบริการอื่นเมื่อชื่อชนกับ SNTalkBot instance
+- การชนชื่อกับ container ที่ไม่มี label ของ TTUHelper จะถูกปฏิเสธอย่างชัดเจน; `ls` แสดง `name-conflict-unmanaged`
+- คง public command catalog 22 คำสั่งเดิมครบถ้วน
+
+---
+
 # TTUHelper 1.5.1
 
 ## การเปลี่ยนแปลง
