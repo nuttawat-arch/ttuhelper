@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.3.0"
+HELPER_VERSION="1.5.0"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -11,6 +11,8 @@ fi
 IMAGE_REPO="${TTU_IMAGE_REPO:-nuttawat0295/sntalkbot}"
 IMAGE_TAG="${TTU_TAG:-latest}"
 IMAGE_NAME="${IMAGE_REPO}:${IMAGE_TAG}"
+API_PORT_MIN="${TTU_API_PORT_MIN:-20000}"
+API_PORT_MAX="${TTU_API_PORT_MAX:-27999}"
 LEGACY_BOTS_ROOT="/opt/ttutilities-bots"
 DEFAULT_BOTS_ROOT="/opt/sntalkbot-bots"
 if [[ -n "${TTU_BOTS_ROOT:-}" ]]; then
@@ -42,14 +44,117 @@ need_root() {
 validate_name() {
   local name="$1"
   [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]] || \
-    fail "Bot name must start with a letter/number and contain only A-Z, a-z, 0-9, _, . or - (max 63 chars)."
+    fail "Bot name must start with a letter/number and contain only A-Z, a-z, 0-9, _, . or - (max 63 chars; no spaces/slashes)."
 }
 
 bot_dir() { printf '%s/%s' "$BOTS_ROOT" "$1"; }
 
+conf_get() {
+  local file="$1" key="$2"
+  [[ -r "$file" ]] || return 0
+  awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/, ""); print; exit}' "$file"
+}
+
+conf_set() {
+  local file="$1" key="$2" value="$3" tmp
+  tmp="$(mktemp)"
+  if [[ -f "$file" ]]; then
+    awk -F= -v k="$key" '$1!=k {print}' "$file" > "$tmp"
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  install -m 0640 "$tmp" "$file"
+  rm -f "$tmp"
+}
+
+port_is_free() {
+  python3 - "$1" <<'PYPORT'
+import socket, sys
+port=int(sys.argv[1])
+s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(('127.0.0.1', port))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PYPORT
+}
+
+allocate_api_port() {
+  TTU_BOTS_ROOT_PY="$BOTS_ROOT" TTU_API_MIN_PY="$API_PORT_MIN" TTU_API_MAX_PY="$API_PORT_MAX" python3 <<'PYPORT'
+import configparser, os, random, socket
+from pathlib import Path
+root=Path(os.environ['TTU_BOTS_ROOT_PY'])
+lo=int(os.environ['TTU_API_MIN_PY']); hi=int(os.environ['TTU_API_MAX_PY'])
+if not (1024 <= lo <= hi <= 65535):
+    raise SystemExit('invalid TTU API port range')
+reserved=set()
+for f in root.glob('*/instance.conf') if root.exists() else []:
+    for line in f.read_text(encoding='utf-8', errors='ignore').splitlines():
+        if line.startswith('api_port='):
+            try: reserved.add(int(line.split('=',1)[1]))
+            except ValueError: pass
+ports=list(range(lo, hi+1)); random.SystemRandom().shuffle(ports)
+for port in ports:
+    if port in reserved: continue
+    s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(('127.0.0.1', port))
+    except OSError:
+        s.close(); continue
+    s.close(); print(port); raise SystemExit(0)
+raise SystemExit('no free API port in configured range')
+PYPORT
+}
+
+generate_api_token() { python3 - <<'PYTOKEN'
+import secrets
+print(secrets.token_urlsafe(48))
+PYTOKEN
+}
+
+ensure_api_metadata() {
+  local name="$1" dir="$2" conf="$dir/instance.conf" port token
+  api_lock_acquire
+  port="$(conf_get "$conf" api_port || true)"
+  token="$(conf_get "$conf" api_token || true)"
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < API_PORT_MIN || port > API_PORT_MAX )); then
+    port="$(allocate_api_port)"
+    conf_set "$conf" api_port "$port"
+  elif ! port_is_free "$port"; then
+    # A running container legitimately owns its port. For a stopped/recreated
+    # instance an occupied port belongs to something else, so choose a new one.
+    if ! docker container inspect "$name" >/dev/null 2>&1 || [[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" != "true" ]]; then
+      port="$(allocate_api_port)"
+      conf_set "$conf" api_port "$port"
+    fi
+  fi
+  if [[ -z "$token" ]]; then
+    token="$(generate_api_token)"
+    conf_set "$conf" api_token "$token"
+  fi
+  conf_set "$conf" api_bind "127.0.0.1"
+  chmod 0640 "$conf"
+  API_PORT="$port"
+  API_TOKEN="$token"
+  api_lock_release
+}
+
 ensure_layout() {
   mkdir -p "$BOTS_ROOT"
-  chmod 0755 "$BOTS_ROOT"
+  chown root:10001 "$BOTS_ROOT" 2>/dev/null || true
+  chmod 2770 "$BOTS_ROOT"
+}
+
+api_lock_acquire() {
+  mkdir -p /run/lock
+  exec 9>/run/lock/ttuhelper-api.lock
+  flock -x 9
+}
+
+api_lock_release() {
+  flock -u 9 || true
+  exec 9>&-
 }
 
 ensure_python() {
@@ -179,15 +284,24 @@ create_bot() {
   mkdir -p "$dir"
   install -m 0640 "$tmp/config.ini" "$dir/config.ini"
   install -m 0640 "$tmp/cookies.txt" "$dir/cookies.txt"
+  api_lock_acquire
+  api_port_new="$(allocate_api_port)"
+  api_token_new="$(generate_api_token)"
   cat > "$dir/instance.conf" <<CONF
 image=$IMAGE_NAME
 created=$(date -Is)
 mode=$mode_name
 player_enabled=$player_enabled
 server_management_enabled=$server_management_enabled
+api_port=$api_port_new
+api_token=$api_token_new
+api_bind=127.0.0.1
 CONF
+  api_lock_release
   chown -R 10001:10001 "$dir"
-  chmod 0750 "$dir"
+  chmod 2770 "$dir"
+  chmod 0660 "$dir/config.ini"
+  chmod 0640 "$dir/cookies.txt" "$dir/instance.conf"
   rm -rf "$tmp"
 
   say "Created instance: $name"
@@ -231,6 +345,11 @@ run_bot() {
   fi
 
   chown -R 10001:10001 "$dir"
+  chmod 2770 "$dir"
+  [[ -f "$dir/config.ini" ]] && chmod 0660 "$dir/config.ini"
+  ensure_api_metadata "$name" "$dir"
+  # instance.conf contains the local API token and stays local to the host.
+  chmod 0640 "$dir/instance.conf"
   read_limits "$dir"
   sink="ttu_${name//[^A-Za-z0-9_]/_}"
 
@@ -247,9 +366,13 @@ run_bot() {
     -e TTUTIL_DATA_DIR=/app/data \
     -e "TTUTIL_PULSE_SINK=$sink" \
     -e TTUTIL_MPV_AO=pulse \
+    -e SNTALKBOT_API_BIND=127.0.0.1 \
+    -e "SNTALKBOT_API_PORT=$API_PORT" \
+    -e "SNTALKBOT_API_TOKEN=$API_TOKEN" \
     "$IMAGE_NAME" >/dev/null
 
   say "Started '$name' with image $IMAGE_NAME"
+  say "Local realtime API: 127.0.0.1:$API_PORT (loopback only)"
   say "Logs: sudo ttuhelper logs $name"
 }
 
@@ -269,6 +392,33 @@ restart_bot() {
   [[ -n "$name" ]] || fail "Usage: ttuhelper restart <name>"
   stop_bot "$name"
   run_bot "$name" 1
+}
+
+delete_bot() {
+  local name="$1" yes="${2:-}" dir real_root real_dir backup_root backup
+  [[ -n "$name" ]] || fail "Usage: ttuhelper delete <name> [--yes]"
+  validate_name "$name"
+  dir="$(bot_dir "$name")"
+  [[ -d "$dir" && ! -L "$dir" ]] || fail "Instance '$name' not found."
+  real_root="$(realpath -m "$BOTS_ROOT")"
+  real_dir="$(realpath -m "$dir")"
+  [[ "$real_dir" == "$real_root/"* && "$real_dir" != "$real_root" ]] || fail "Refusing unsafe delete path: $real_dir"
+  if [[ "$yes" != "--yes" ]]; then
+    say "WARNING: this removes the instance config/data after making a root-only backup."
+    read -rp "Type the exact instance name '$name' to confirm: " answer
+    [[ "$answer" == "$name" ]] || fail "Delete cancelled."
+  fi
+  if docker container inspect "$name" >/dev/null 2>&1; then
+    docker rm -f "$name" >/dev/null
+  fi
+  backup_root="${TTU_DELETE_BACKUP_ROOT:-/opt/sntalkbot-deleted-backups}"
+  install -d -m 0700 "$backup_root"
+  backup="$backup_root/${name}-$(date +%Y%m%d-%H%M%S).tar.gz"
+  tar -C "$BOTS_ROOT" -czf "$backup" -- "$name"
+  chmod 0600 "$backup"
+  rm -rf --one-file-system -- "$real_dir"
+  say "Deleted instance '$name'."
+  say "Backup: $backup"
 }
 
 logs_bot() {
@@ -299,37 +449,115 @@ list_containers() {
   docker ps -a --filter "label=$LABEL_KEY=$LABEL_VALUE" --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 }
 
+instance_has_player() {
+  local dir="$1" mode value
+  if [[ -f "$dir/instance.conf" ]]; then
+    mode="$(awk -F= '$1=="mode" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print tolower($2); exit}' "$dir/instance.conf")"
+    case "$mode" in
+      player|full) return 0 ;;
+      manager) return 1 ;;
+    esac
+  fi
+  if [[ -f "$dir/config.ini" ]]; then
+    value="$(awk -F= 'tolower($1) ~ /^[[:space:]]*player_enabled[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}' "$dir/config.ini")"
+    case "$value" in
+      true|1|yes|on) return 0 ;;
+      false|0|no|off) return 1 ;;
+    esac
+  fi
+  # Legacy/unknown instances are treated as compatible instead of being bricked.
+  return 0
+}
+
+validate_cookie_file() {
+  local path="$1" first data_rows youtube_rows
+  [[ -s "$path" ]] || fail "Cookie file is empty: $path"
+  # Normalize Windows CRLF because Netscape cookie files are consumed inside Linux.
+  sed -i 's/\r$//' "$path"
+  first="$(head -n 1 "$path" | sed 's/^\xEF\xBB\xBF//')"
+  case "$first" in
+    '# Netscape HTTP Cookie File'|'# HTTP Cookie File') ;;
+    *) fail "Invalid cookies file. First line must be '# Netscape HTTP Cookie File' or '# HTTP Cookie File'." ;;
+  esac
+  data_rows="$(awk -F '\t' 'BEGIN{c=0} (!/^#/ || /^#HttpOnly_/) && NF>=7 {c++} END{print c}' "$path")"
+  [[ "$data_rows" -gt 0 ]] || fail "No Netscape cookie records were found (expected tab-separated 7-field rows)."
+  youtube_rows="$(awk -F '\t' 'BEGIN{c=0} (!/^#/ || /^#HttpOnly_/) && NF>=7 {d=$1; sub(/^#HttpOnly_/, "", d); if (d ~ /(^|\.)youtube\.com$/) c++} END{print c}' "$path")"
+  if [[ "$youtube_rows" -eq 0 ]]; then
+    warn "The file is valid Netscape format but contains no youtube.com cookie rows."
+  fi
+  COOKIE_DATA_ROWS="$data_rows"
+  COOKIE_YOUTUBE_ROWS="$youtube_rows"
+}
+
+install_cookie_file() {
+  local source="$1" destination="$2" tmp
+  [[ -f "$source" ]] || fail "Cookie source file not found: $source"
+  tmp="$(mktemp)"
+  cp -- "$source" "$tmp"
+  validate_cookie_file "$tmp"
+  install -o 10001 -g 10001 -m 0640 "$tmp" "$destination"
+  rm -f "$tmp"
+}
+
 update_cookies() {
-  local name="$1" dir tmp
-  [[ -n "$name" ]] || fail "Usage: ttuhelper cks <name>"
+  local name="$1" source="${2:-}" dir tmp
+  [[ -n "$name" ]] || fail "Usage: ttuhelper cks <name> [cookies.txt]"
   dir="$(bot_dir "$name")"
   [[ -d "$dir" ]] || fail "Instance '$name' not found."
-  say "Paste Netscape-format cookies, then press Ctrl+D:"
-  tmp="$(mktemp)"
-  cat > "$tmp"
-  if [[ ! -s "$tmp" ]]; then
+  instance_has_player "$dir" || fail "Instance '$name' is Server Manager-only; YouTube cookies belong only to Player/Full Bot."
+  if [[ -n "$source" ]]; then
+    install_cookie_file "$source" "$dir/cookies.txt"
+  else
+    say "Paste Netscape-format cookies, then press Ctrl+D:"
+    tmp="$(mktemp)"
+    cat > "$tmp"
+    validate_cookie_file "$tmp"
+    install -o 10001 -g 10001 -m 0640 "$tmp" "$dir/cookies.txt"
     rm -f "$tmp"
-    fail "No cookie content received."
   fi
-  install -o 10001 -g 10001 -m 0640 "$tmp" "$dir/cookies.txt"
-  rm -f "$tmp"
-  say "Updated cookies for '$name'."
+  say "Updated cookies for '$name' ($COOKIE_DATA_ROWS records; $COOKIE_YOUTUBE_ROWS YouTube records)."
+  say "Restart the instance to force yt-dlp to reload the new session: sudo ttuhelper restart $name"
 }
 
 update_all_cookies() {
-  local tmp d count=0
-  say "Paste Netscape-format cookies once, then press Ctrl+D. It will be copied to every instance:"
+  local source="${1:-}" tmp d count=0 skipped=0
   tmp="$(mktemp)"
-  cat > "$tmp"
-  [[ -s "$tmp" ]] || { rm -f "$tmp"; fail "No cookie content received."; }
+  if [[ -n "$source" ]]; then
+    [[ -f "$source" ]] || { rm -f "$tmp"; fail "Cookie source file not found: $source"; }
+    cp -- "$source" "$tmp"
+  else
+    say "Paste Netscape-format cookies once, then press Ctrl+D. It will be copied to every instance:"
+    cat > "$tmp"
+  fi
+  validate_cookie_file "$tmp"
   shopt -s nullglob
   for d in "$BOTS_ROOT"/*; do
     [[ -d "$d" && -f "$d/config.ini" ]] || continue
+    if ! instance_has_player "$d"; then
+      skipped=$((skipped+1))
+      continue
+    fi
     install -o 10001 -g 10001 -m 0640 "$tmp" "$d/cookies.txt"
     count=$((count+1))
   done
   rm -f "$tmp"
-  say "Updated cookies for $count instance(s)."
+  say "Updated cookies for $count Player/Full instance(s) ($COOKIE_DATA_ROWS records; $COOKIE_YOUTUBE_ROWS YouTube records); skipped $skipped Server Manager instance(s)."
+  say "Restart running Player/Full instances (or run sudo ttuhelper update) so yt-dlp reloads the new session."
+}
+
+check_cookies() {
+  local name="$1" dir tmp
+  [[ -n "$name" ]] || fail "Usage: ttuhelper cks-check <name>"
+  dir="$(bot_dir "$name")"
+  [[ -d "$dir" ]] || fail "Instance '$name' not found."
+  instance_has_player "$dir" || fail "Instance '$name' is Server Manager-only; YouTube cookies belong only to Player/Full Bot."
+  [[ -f "$dir/cookies.txt" ]] || fail "cookies.txt not found for '$name'."
+  tmp="$(mktemp)"
+  cp -- "$dir/cookies.txt" "$tmp"
+  validate_cookie_file "$tmp"
+  rm -f "$tmp"
+  say "cookies.txt for '$name': format OK; $COOKIE_DATA_ROWS records; $COOKIE_YOUTUBE_ROWS YouTube records."
+  say "Cookie values are intentionally not displayed."
 }
 
 set_limits() {
@@ -347,7 +575,7 @@ set_limits() {
     if [[ -n "$memory" ]]; then printf 'memory=%s\n' "$memory"; fi
   } > "$dir/limits.conf"
   chown 10001:10001 "$dir/limits.conf"
-  chmod 0640 "$dir/limits.conf"
+  chmod 0660 "$dir/limits.conf"
   say "Limits saved. Recreate the instance with: sudo ttuhelper restart $name"
 }
 
@@ -468,7 +696,7 @@ MIGHELP
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     chown -R 10001:10001 "$(bot_dir "$name")"
-    chmod 0750 "$(bot_dir "$name")"
+    chmod 2770 "$(bot_dir "$name")"
     count=$((count+1))
   done < "$names_file"
 
@@ -513,6 +741,7 @@ Data root: $BOTS_ROOT
   ttuhelper run <name>          เริ่มบอตจาก config/data เดิม; ถ้ามี container ที่หยุดอยู่จะสร้างใหม่
   ttuhelper stop <name>         หยุดและลบ container แต่เก็บ config/data ของบอตไว้
   ttuhelper restart <name>      รีสตาร์ตบอตหนึ่งตัวโดยสร้าง container ใหม่จาก image ที่กำหนด
+  ttuhelper delete <name>        ลบ instance หลังยืนยันชื่อ; สำรอง config/data แบบ root-only ก่อนลบ (เว็บใช้ --yes หลังยืนยัน)
   ttuhelper logs <name>         ดูบันทึกการทำงานแบบสด; กด Ctrl+C เพื่อออกจากหน้าดู log
   ttuhelper ls                  ดูรายชื่อ instance ทั้งหมดพร้อมสถานะ running/stopped
   ttuhelper ps                  ดู container ที่ TTUHelper จัดการ พร้อมสถานะและ image ที่ใช้อยู่
@@ -521,8 +750,9 @@ Data root: $BOTS_ROOT
   ttuhelper pull                ดาวน์โหลด Docker image/tag ที่ตั้งไว้ใน /etc/default/ttuhelper
   ttuhelper update              pull image ใหม่ แล้วสร้างใหม่เฉพาะ instance ที่กำลังรัน โดยเก็บข้อมูลเดิม
   ttuhelper migrate-ttmediabot [path]  ย้ายเฉพาะ TTMediaBot Docker Helper config.json v1 ไป SNTalkBot ใหม่ (alias: import-ttmediabot)
-  ttuhelper cks <name>          แทนที่ cookies.txt ของ instance หนึ่งตัว
-  ttuhelper cks-all             ใส่ cookies ชุดเดียวให้ทุก instance
+  ttuhelper cks <name> [file]   แทนที่ cookies.txt ของ Player/Full instance; ระบุไฟล์ได้หรือวางผ่าน stdin
+  ttuhelper cks-all [file]      ใส่ cookies ให้ Player/Full ทุกตัวและข้าม Server Manager; ระบุไฟล์ได้หรือวางผ่าน stdin
+  ttuhelper cks-check <name>    ตรวจ cookies ของ Player/Full โดยไม่แสดงค่า secret
   ttuhelper limit <name>        ตั้งข้อจำกัด CPU/RAM ของ instance แล้วใช้หลัง restart
   ttuhelper edit <name>         เปิด config.ini ของ instance ด้วย editor; ค่าเริ่มต้นคือ nano
   ttuhelper path <name>         แสดงตำแหน่งโฟลเดอร์ config/data ของ instance
@@ -538,6 +768,8 @@ Data root: $BOTS_ROOT
   TTU_TAG                      Default: $IMAGE_TAG
   TTU_BOTS_ROOT                Default: $BOTS_ROOT
   TTU_HELPER_CONFIG            Default: $CONFIG_FILE
+  TTU_API_PORT_MIN             Default: $API_PORT_MIN
+  TTU_API_PORT_MAX             Default: $API_PORT_MAX
 EOF2
 }
 
@@ -546,6 +778,11 @@ main() {
   shift || true
   if [[ "$cmd" == "help" || "$cmd" == "-h" || "$cmd" == "--help" || -z "$cmd" || "$cmd" == "version" || "$cmd" == "-v" || "$cmd" == "--version" ]]; then
     :
+  elif [[ "$cmd" == "cks" || "$cmd" == "cks-all" || "$cmd" == "cks-check" ]]; then
+    # Cookie file maintenance is deliberately independent from the Docker daemon.
+    # This lets operators install/check a session before the Player container starts.
+    need_root "$cmd ${*:-}"
+    ensure_layout
   else
     need_root "$cmd ${*:-}"
     ensure_layout
@@ -557,6 +794,7 @@ main() {
     run) run_bot "${1:-}" 0 ;;
     stop) stop_bot "${1:-}" ;;
     restart) restart_bot "${1:-}" ;;
+    delete) delete_bot "${1:-}" "${2:-}" ;;
     logs) logs_bot "${1:-}" ;;
     ls) list_bots ;;
     ps) list_containers ;;
@@ -565,8 +803,9 @@ main() {
     pull) pull_image ;;
     update) update_running ;;
     migrate-ttmediabot|import-ttmediabot) migrate_ttmediabot "$@" ;;
-    cks) update_cookies "${1:-}" ;;
-    cks-all) update_all_cookies ;;
+    cks) update_cookies "${1:-}" "${2:-}" ;;
+    cks-all) update_all_cookies "${1:-}" ;;
+    cks-check) check_cookies "${1:-}" ;;
     limit) set_limits "${1:-}" ;;
     edit) edit_config "${1:-}" ;;
     path) show_path "${1:-}" ;;

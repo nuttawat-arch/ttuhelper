@@ -65,8 +65,9 @@ sudo ttuhelper run <ชื่อบอต>
 | `ttuhelper stop-all` | หยุด container ทุกตัวโดยไม่ลบข้อมูลถาวร |
 | `ttuhelper pull` | ดาวน์โหลด Docker image/tag ที่ตั้งไว้ |
 | `ttuhelper update` | pull image ใหม่ แล้วอัปเดตเฉพาะ instance ที่กำลังรัน โดยรักษาข้อมูลเดิม |
-| `ttuhelper cks <name>` | แทนที่ `cookies.txt` ของ instance หนึ่งตัว |
-| `ttuhelper cks-all` | ใส่ cookies ชุดเดียวให้ทุก instance |
+| `ttuhelper cks <name> [file]` | แทนที่ `cookies.txt` ของ instance หนึ่งตัวจากไฟล์หรือ stdin |
+| `ttuhelper cks-all [file]` | ใส่ cookies ชุดเดียวให้ทุก instance จากไฟล์หรือ stdin |
+| `ttuhelper cks-check <name>` | ตรวจรูปแบบและจำนวน cookie โดยไม่แสดงค่า secret |
 | `ttuhelper limit <name>` | ตั้งข้อจำกัด CPU/RAM มีผลหลัง restart |
 | `ttuhelper edit <name>` | เปิด `config.ini` ค่าเริ่มต้นใช้ `nano` |
 | `ttuhelper path <name>` | แสดงตำแหน่งโฟลเดอร์ config/data ของ instance |
@@ -144,3 +145,8 @@ sudo ttuhelper migrate-ttmediabot /opt/ttmediabot-docker-helper
 ```
 
 The importer creates current `config.ini` instances under `/opt/sntalkbot-bots`, copies `cookies.txt`, preserves the old source tree as a backup, and can restart the imported names with the current SNTalkBot image. See `MIGRATE_TTMEDIABOT_TH.md` for the detailed Thai guide.
+
+
+## YouTube cookies
+
+ดูขั้นตอนแบบละเอียดใน `YOUTUBE_COOKIES_TH.md` SNTalkBot มี default cookie bootstrap ให้ Player/Full; `ttuhelper cks` ใช้แทน `/app/data/cookies.txt` ด้วยชุดของผู้ใช้ใน persistent data โดยไม่ถูก default overwrite
