@@ -108,6 +108,23 @@ if docker image inspect "${IMAGE_REPO}:${IMAGE_TAG}" >/dev/null 2>&1; then
 fi
 docker pull "${IMAGE_REPO}:${IMAGE_TAG}"
 
+# Repair only instances that carry the TTMediaBot migration marker. This is a
+# schema-normalization pass over persistent config, not a re-import: current
+# valid values are preserved, malformed typed values are coerced/defaulted, and
+# the old config is backed up before any rewrite.
+if [[ -x /usr/local/bin/ttuhelper && -f /usr/local/lib/ttuhelper/migrate_ttmediabot.py ]]; then
+  say "Checking previously migrated TTMediaBot instances against the current SNTalkBot config schema ..."
+  tmp_repair="$(mktemp -d)"
+  if docker run --rm --entrypoint cat "${IMAGE_REPO}:${IMAGE_TAG}" /app/config_default.ini > "$tmp_repair/config_default.ini" && [[ -s "$tmp_repair/config_default.ini" ]]; then
+    python3 /usr/local/lib/ttuhelper/migrate_ttmediabot.py \
+      --repair-existing --dest-root "$BOTS_ROOT" --template "$tmp_repair/config_default.ini" || \
+      say "WARNING: migrated-config repair reported an error; existing bot data was kept."
+  else
+    say "WARNING: could not read the current config template; migrated-config repair was skipped."
+  fi
+  rm -rf "$tmp_repair"
+fi
+
 say "Installation complete."
 say "Create the first instance with: sudo ttuhelper new"
 say "Then start it with: sudo ttuhelper run <name>"

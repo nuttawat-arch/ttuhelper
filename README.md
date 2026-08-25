@@ -138,7 +138,9 @@ sudo ttuhelper update
 
 ## Legacy TTMediaBot migration
 
-TTUHelper 1.3.0 can import only the legacy TTMediaBot Docker Helper layout where each bot directory contains a `config.json` with `config_version: 1`. It is not a generic importer for unrelated legacy bot projects.
+TTUHelper 1.5.3 can import only the legacy TTMediaBot Docker Helper layout where each bot directory contains a `config.json` with `config_version: 1`. It is not a generic importer for unrelated legacy bot projects.
+
+Migration is template-first and allowlisted: unsupported legacy fields are dropped, missing current fields keep current defaults, and raw `config.json` is not copied into the runtime instance. Previously migrated instances are automatically repaired against the current SNTalkBot template during helper install/update and before run/restart, with a backup and secret-free repair report.
 
 ```bash
 sudo ttuhelper migrate-ttmediabot /opt/ttmediabot-docker-helper

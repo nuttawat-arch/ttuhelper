@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.5.2"
+HELPER_VERSION="1.5.3"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -199,6 +199,31 @@ ensure_image() {
   fi
 }
 
+repair_migrated_configs() {
+  local only_name="${1:-}" tmp args=()
+  [[ -f "$MIGRATOR_PATH" ]] || return 0
+  [[ -d "$BOTS_ROOT" ]] || return 0
+  if [[ -n "$only_name" ]]; then
+    local dir
+    dir="$(bot_dir "$only_name")"
+    [[ -f "$dir/MIGRATED_FROM_TTMEDIABOT.txt" || -f "$dir/instance.conf" ]] || return 0
+    if [[ -f "$dir/instance.conf" ]] && ! grep -q '^migrated_from=' "$dir/instance.conf" 2>/dev/null && [[ ! -f "$dir/MIGRATED_FROM_TTMEDIABOT.txt" ]]; then
+      return 0
+    fi
+  fi
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  docker run --rm --entrypoint cat "$IMAGE_NAME" /app/config_default.ini > "$tmp/config_default.ini"
+  [[ -s "$tmp/config_default.ini" ]] || { warn "Could not read current config template; migrated-config repair skipped."; return 0; }
+  args=("$MIGRATOR_PATH" --repair-existing --dest-root "$BOTS_ROOT" --template "$tmp/config_default.ini")
+  if [[ -n "$only_name" ]]; then args+=(--repair-name "$only_name"); fi
+  if ! python3 "${args[@]}"; then
+    warn "Automatic repair of migrated SNTalkBot config reported an error; existing config/data were kept."
+  fi
+  rm -rf "$tmp"
+  trap - RETURN
+}
+
 make_empty_cookie_file() {
   local path="$1"
   cat > "$path" <<'COOKIES'
@@ -351,6 +376,7 @@ run_bot() {
   dir="$(bot_dir "$name")"
   [[ -d "$dir" && -f "$dir/config.ini" ]] || fail "Instance '$name' not found in $BOTS_ROOT"
   ensure_image
+  repair_migrated_configs "$name"
 
   refuse_unmanaged_collision "$name"
   if docker container inspect "$name" >/dev/null 2>&1; then
@@ -656,6 +682,7 @@ update_running() {
   local names name count=0
   names="$(docker ps --filter "label=$LABEL_KEY=$LABEL_VALUE" --format '{{.Names}}')"
   pull_image
+  repair_migrated_configs
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     say "Recreating $name with $IMAGE_NAME ..."

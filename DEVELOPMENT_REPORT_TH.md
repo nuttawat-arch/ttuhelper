@@ -1,3 +1,16 @@
+# DEVELOPMENT REPORT — TTUHelper 1.5.3
+
+- ตรวจเทียบกับ TTMediaBot `config.json` v1 ตัวจริงที่ผู้ใช้ส่งมา: general/sound_devices/player/teamtalk/services/logger/shortening ครบ
+- field ที่รองรับจริงถูก map 23 path; field ที่ไม่มี semantic equivalent เช่น cache/time/start_commands, device IDs, fade interval, banned users/event handlers, services tokens/path, logger และ shortening ถูกทิ้งโดยตั้งใจ
+- ทดสอบแปลงไฟล์ต้นฉบับจริงเป็น Player: schema หลังแปลงตรง `config_default.ini` ปัจจุบันทุก section/key; host/ports/account/channel/volume/admin/fade ถูกแปลงถูกต้อง และ device/cookie path ใช้นโยบาย Docker ปัจจุบัน
+- เพิ่ม internal migrated-config repair mode โดยไม่เพิ่ม public command
+- ซ่อม wrong-type/missing/stale fields จาก current SNTalkBot template; preserve valid current values, safe-coerce, default invalid, drop unknown
+- ถ้า config.ini parse ไม่ได้ จะ rebuild จาก preserved TTMediaBot config.json เมื่อ source ยังอยู่; ถ้าไม่มี source จะไม่เดา credential และจะรายงานว่า repair ไม่สำเร็จโดยคงไฟล์เดิม
+- auto repair ทำทั้งตอน install/update helper และก่อน run/restart migrated instance
+- regression ครอบคลุม backup, secret-free report, Player role enforcement, range/type coercion และ unknown section removal
+
+---
+
 # DEVELOPMENT REPORT — TTUHelper 1.5.2
 
 วันที่: 2026-08-25

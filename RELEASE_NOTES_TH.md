@@ -1,3 +1,14 @@
+# TTUHelper 1.5.3 — TTMediaBot Migration Self-Repair
+
+- Migration เป็น template-first + allowlist mapping ตาม config v1 จริง ไม่ copy raw config
+- player.volume_fading แบบ boolean map ไป fade_enabled; volume_fading_interval ของ legacy ไม่มี semantic equivalent จึงทิ้ง
+- installer หลัง pull image จะตรวจ instance ที่เคย migrate แล้วและซ่อม config.ini ตาม schema ปัจจุบันอัตโนมัติ
+- ก่อนเขียน config ที่ซ่อมจะ backup ไว้ใต้ .migration-repair-backups; report เก็บเฉพาะชื่อ field/action ไม่เก็บ secret
+- run/restart ของ migrated instance จะตรวจ repair อีกครั้งก่อนสร้าง container
+- คำสั่งสาธารณะยังคง 22 คำสั่งเดิม ไม่มี public command ใหม่
+
+---
+
 # TTUHelper 1.5.2
 
 ## การเปลี่ยนแปลง

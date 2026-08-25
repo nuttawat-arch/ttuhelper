@@ -49,6 +49,77 @@ need('name-conflict-unmanaged' in sh, 'instance listing surfaces unmanaged Docke
 for token in ('has curl || missing+=(curl)','has python3 || missing+=(python3)','has flock || missing+=(util-linux)','if ! has docker','Docker command already exists; skipping Docker installation'):
     need(token in installer, f'installer preflight present: {token}')
 need('grep -q \'^TTU_API_PORT_MIN=\'' in installer and 'grep -q \'^TTU_API_PORT_MAX=\'' in installer, 'upgrade installer adds only missing API range settings without replacing existing config')
+need('--repair-existing' in installer and 'Checking previously migrated TTMediaBot instances' in installer, 'helper installer automatically repairs previously migrated configs after pulling the current image')
+need('repair_migrated_configs "$name"' in sh and 'repair_migrated_configs()' in sh, 'run/restart repairs migrated config before container recreation')
+
+# Migration schema regression: build from the current template, import only
+# supported legacy values, reject invalid scalar/range values, and never copy the
+# raw legacy config into the active instance. Missing current fields keep their
+# template defaults automatically.
+import tempfile, json, configparser
+try:
+    with tempfile.TemporaryDirectory() as td:
+        t=Path(td); source=t/'legacy'; bot=source/'LegacyBot'; bot.mkdir(parents=True)
+        dest=t/'dest'; template=t/'config_default.ini'
+        template_text = "[features]\nplayer_enabled=True\nserver_management_enabled=True\n[server]\naddress=CHANGE_ME\ntcp_port=10333\nudp_port=10333\nencrypted=False\nusername=CHANGE_ME\npassword=\n[bot]\nlanguage=th\nnickname=SN TalkBot\ngender=0\ndefault_channel=/\nchannel_password=\nstatus_message=auto\nblocked_commands=\nreconnection_attempts=-1\nreconnection_timeout=10\nintercept_channel_messages=True\nwelcome_broadcast=True\nwelcome_mode=0\nprofanity_filter_enabled=False\n[accounts]\nauthorized_users=\ndetect_server_admins=True\n[playback]\ninput_device=auto\noutput_device=auto\ncookiefile_path=/app/data/cookies.txt\ndefault_volume=80\nmax_volume=150\nseek_step=5\nsend_channel_messages=True\nvolume_fading=0\nfade_enabled=True\n[teamtalk_license]\nlicense_name=\nlicense_key=\n"
+        template.write_text(template_text, encoding='utf-8')
+        legacy={
+            'config_version':1,
+            'general':{'language':'xx-unsupported','send_channel_messages':'yes','cache_file_name':'TTMediaBotCache.dat','blocked_commands':['/p','/s'],'delete_uploaded_files_after':300,'time_format':'%H:%M','start_commands':[],'legacy_only':'drop-me'},
+            'sound_devices':{'output_device':1,'input_device':5},
+            'player':{'default_volume':'not-a-number','max_volume':9999,'seek_step':'7','volume_fading':True,'volume_fading_interval':0.025,'player_options':{},'old_device':42},
+            'teamtalk':{'hostname':'server.example','tcp_port':'10333','udp_port':'invalid','encrypted':'true','username':'botuser','password':'legacy-secret','nickname':['bad-container'],'channel':'/music','channel_password':'','status':'','gender':'unknown','reconnection_attempts':-1,'reconnection_timeout':10,'users':{'admins':['alice',{'bad':'object'},'alice'],'banned_users':['old-ban'],'other':['drop']},'event_handling':{'load_event_handlers':False,'event_handlers_file_name':'event_handlers.py'},'license_name':'name','license_key':'key','unknown_teamtalk':'drop'},
+            'services':{'default_service':'yt','vk':{'enabled':True,'token':'vk-secret'},'yam':{'enabled':True,'token':'yam-secret'},'yt':{'enabled':True,'cookiefile_path':'/home/ttbot/data/cookies.txt'},'youtube':{'api_key':'unsupported-secret'}},
+            'logger':{'log':True,'level':'INFO','format':'legacy-format','mode':'FILE','file_name':'TTMediaBot.log','max_file_size':0,'backup_count':0},
+            'shortening':{'shorten_links':False,'service':'clckru','service_params':{}},
+        }
+        (bot/'config.json').write_text(json.dumps(legacy), encoding='utf-8')
+        (bot/'limit.txt').write_text('--cpus nope --memory ../../etc/passwd\n', encoding='utf-8')
+        cp=subprocess.run([sys.executable,str(ROOT/'tools/migrate_ttmediabot.py'),'--source',str(source),'--dest-root',str(dest),'--template',str(template),'--mode','player','--yes'],capture_output=True,text=True,timeout=20)
+        good=cp.returncode==0
+        cfg=configparser.ConfigParser(interpolation=None); cfg.read(dest/'LegacyBot'/'config.ini',encoding='utf-8')
+        good=good and cfg.get('bot','language')=='th' and cfg.get('bot','nickname')=='SN TalkBot'
+        good=good and cfg.getint('playback','default_volume')==80 and cfg.getint('playback','max_volume')==150 and cfg.getint('playback','seek_step')==7 and cfg.getboolean('playback','fade_enabled') is True and cfg.getint('playback','volume_fading')==0
+        good=good and cfg.getint('server','udp_port')==10333 and cfg.getboolean('server','encrypted') is True
+        good=good and cfg.get('accounts','authorized_users')=='alice'
+        good=good and not (dest/'LegacyBot'/'limits.conf').exists()
+        good=good and not (dest/'LegacyBot'/'legacy-config.json').exists()
+        reports=list((dest/'.migration-reports').glob('*.json'))
+        report_text=reports[0].read_text(encoding='utf-8') if reports else ''
+        good=good and all(x in report_text for x in ('general.legacy_only','general.cache_file_name','sound_devices.output_device','player.volume_fading_interval','teamtalk.users.banned_users','teamtalk.event_handling.load_event_handlers','services.vk.token','logger.file_name','shortening.service'))
+        good=good and all(secret not in report_text for secret in ('unsupported-secret','legacy-secret','vk-secret','yam-secret'))
+        template_cfg=configparser.ConfigParser(interpolation=None); template_cfg.read(template,encoding='utf-8')
+        good=good and {(sec,key) for sec in cfg.sections() for key in cfg[sec]} == {(sec,key) for sec in template_cfg.sections() for key in template_cfg[sec]}
+        need(good, 'TTMediaBot migration is template-first, allowlisted, type-safe, drops unsupported/raw legacy values and fills current defaults')
+        if not good:
+            print('[DETAIL] migration stdout:',cp.stdout); print('[DETAIL] migration stderr:',cp.stderr)
+
+        # Already-migrated config repair regression.
+        migrated=dest/'LegacyBot'; current=configparser.ConfigParser(interpolation=None); current.read(migrated/'config.ini',encoding='utf-8')
+        current.set('server','tcp_port','10333.0'); current.set('server','udp_port','70000')
+        current.set('server','password','do-not-log-this-secret')
+        current.set('features','server_management_enabled','nonsense')
+        current.set('playback','default_volume','55.0'); current.set('playback','max_volume','wrong')
+        current.set('playback','send_channel_messages','1'); current.remove_option('playback','seek_step')
+        current.set('bot','blocked_commands','[/bad object]'); current.set('accounts','authorized_users','alice, alice, bob')
+        current.set('playback','legacy_stale_key','drop'); current.add_section('legacy_extra'); current.set('legacy_extra','token','secret-legacy-extra')
+        with (migrated/'config.ini').open('w',encoding='utf-8') as fh: current.write(fh)
+        repair=subprocess.run([sys.executable,str(ROOT/'tools/migrate_ttmediabot.py'),'--repair-existing','--dest-root',str(dest),'--template',str(template)],capture_output=True,text=True,timeout=20)
+        fixed=configparser.ConfigParser(interpolation=None); fixed.read(migrated/'config.ini',encoding='utf-8')
+        repair_reports=sorted((dest/'.migration-reports').glob('ttmediabot-repair-*.json'))
+        repair_text=repair_reports[-1].read_text(encoding='utf-8') if repair_reports else ''
+        repair_good=repair.returncode==0 and fixed.getint('server','tcp_port')==10333 and fixed.getint('server','udp_port')==10333
+        repair_good=repair_good and fixed.get('server','password')=='do-not-log-this-secret' and fixed.getboolean('features','server_management_enabled') is False
+        repair_good=repair_good and fixed.getint('playback','default_volume')==55 and fixed.getint('playback','max_volume')==150 and fixed.getint('playback','seek_step')==5 and fixed.getboolean('playback','send_channel_messages') is True
+        repair_good=repair_good and fixed.get('bot','blocked_commands')=='' and fixed.get('accounts','authorized_users')=='alice,bob'
+        repair_good=repair_good and not fixed.has_option('playback','legacy_stale_key') and not fixed.has_section('legacy_extra')
+        repair_good=repair_good and bool(list((dest/'.migration-repair-backups').rglob('config.ini'))) and 'do-not-log-this-secret' not in repair_text and 'secret-legacy-extra' not in repair_text
+        repair_good=repair_good and 'playback.default_volume' in repair_text and 'playback.max_volume' in repair_text and 'playback.legacy_stale_key' in repair_text
+        need(repair_good, 'previously migrated configs auto-repair against current schema with backup, safe coercion/defaults and secret-free report')
+        if not repair_good:
+            print('[DETAIL] repair stdout:',repair.stdout); print('[DETAIL] repair stderr:',repair.stderr); print('[DETAIL] repair report:',repair_text)
+except Exception as exc:
+    need(False, f'TTMediaBot schema migration regression: {exc!r}')
 # Shell syntax.  On Windows, ``bash`` on PATH can be WSL bash.  Passing a
 # Windows path such as D:\\repo\\install.sh to it produces a false failure even
 # when the script is valid.  Prefer the Git-for-Windows bash that ships with git
