@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.5.6"
+HELPER_VERSION="1.5.7"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -13,6 +13,7 @@ IMAGE_TAG="${TTU_TAG:-latest}"
 IMAGE_NAME="${IMAGE_REPO}:${IMAGE_TAG}"
 API_PORT_MIN="${TTU_API_PORT_MIN:-20000}"
 API_PORT_MAX="${TTU_API_PORT_MAX:-27999}"
+CENTRAL_TELEGRAM_ENV="/etc/sntalkbot-telegram.env"
 LEGACY_BOTS_ROOT="/opt/ttutilities-bots"
 DEFAULT_BOTS_ROOT="/opt/sntalkbot-bots"
 if [[ -n "${TTU_BOTS_ROOT:-}" ]]; then
@@ -359,6 +360,18 @@ CONF
   say "Run it with: sudo ttuhelper run $name"
 }
 
+read_central_telegram_env() {
+  TELEGRAM_ENV_ARGS=()
+  local token="" chat_id=""
+  if [[ -r "$CENTRAL_TELEGRAM_ENV" ]]; then
+    token="$(conf_get "$CENTRAL_TELEGRAM_ENV" SNTALKBOT_TELEGRAM_BOT_TOKEN || true)"
+    chat_id="$(conf_get "$CENTRAL_TELEGRAM_ENV" SNTALKBOT_TELEGRAM_DEFAULT_CHAT_ID || true)"
+  fi
+  [[ -n "$token" ]] && TELEGRAM_ENV_ARGS+=(-e "SNTALKBOT_TELEGRAM_BOT_TOKEN=$token")
+  [[ -n "$chat_id" ]] && TELEGRAM_ENV_ARGS+=(-e "SNTALKBOT_TELEGRAM_DEFAULT_CHAT_ID=$chat_id")
+  return 0
+}
+
 read_limits() {
   local dir="$1" cpu="" memory=""
   LIMIT_ARGS=()
@@ -403,6 +416,7 @@ run_bot() {
   # instance.conf contains the local API token and stays local to the host.
   chmod 0640 "$dir/instance.conf"
   read_limits "$dir"
+  read_central_telegram_env
   sink="ttu_${name//[^A-Za-z0-9_]/_}"
 
   docker run -d \
@@ -421,6 +435,7 @@ run_bot() {
     -e SNTALKBOT_API_BIND=127.0.0.1 \
     -e "SNTALKBOT_API_PORT=$API_PORT" \
     -e "SNTALKBOT_API_TOKEN=$API_TOKEN" \
+    "${TELEGRAM_ENV_ARGS[@]}" \
     "$IMAGE_NAME" >/dev/null
 
   say "Started '$name' with image $IMAGE_NAME"

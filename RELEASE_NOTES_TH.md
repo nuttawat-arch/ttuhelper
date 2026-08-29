@@ -1,3 +1,10 @@
+# TTUHelper 1.5.7 — Central Telegram Environment
+
+- เมื่อมีการตั้งค่า Telegram ส่วนกลางจาก Web Manager, TTUHelper อ่าน `/etc/sntalkbot-telegram.env` แบบ root-only และส่ง token/default chat ID เข้า container ผ่าน environment ตอนสร้างหรือ restart
+- ไม่พิมพ์ token ออก stdout/log และไม่คัดลอก secret กลางลง `config.ini` ราย instance
+- ค่า Telegram ใน config ราย instance ยังทำงานเป็น fallback เมื่อไม่มี environment กลาง
+- public command catalog ยังคง 22 คำสั่งเดิม และ batch update/queue-preservation behavior ไม่เปลี่ยน
+
 # TTUHelper 1.5.6 — 5.1.13 Config Schema Cleanup
 
 - ใช้ SNTalkBot 5.1.13 `config_default.ini` เป็น schema authority ระหว่าง create/repair/update จึงไม่คง key ของ legacy `messages.txt` scheduler ที่ถูกถอดแล้ว

@@ -32,6 +32,7 @@ need("s.bind(('127.0.0.1', port))" in sh, 'API allocator verifies the port is ac
 need('api_lock_acquire()' in sh and 'flock -x 9' in sh and sh.count('api_lock_acquire') >= 3, 'API allocation is serialized to prevent concurrent duplicate assignments')
 for token in ('SNTALKBOT_API_BIND=127.0.0.1','SNTALKBOT_API_PORT=$API_PORT','SNTALKBOT_API_TOKEN=$API_TOKEN'):
     need(token in sh, f'container receives local API metadata: {token}')
+need('CENTRAL_TELEGRAM_ENV="/etc/sntalkbot-telegram.env"' in sh and 'read_central_telegram_env()' in sh and 'SNTALKBOT_TELEGRAM_BOT_TOKEN' in sh and 'SNTALKBOT_TELEGRAM_DEFAULT_CHAT_ID' in sh and '"${TELEGRAM_ENV_ARGS[@]}"' in sh, 'central Telegram environment is injected only at container creation from the root-only host file')
 need('generate_api_token()' in sh and 'api_token_new="$(generate_api_token)"' in sh and 'chmod 0640 "$dir/instance.conf"' in sh, 'API token is generated per instance and kept in protected instance metadata')
 # Linux/web-manager file sharing
 need('chmod 2770 "$BOTS_ROOT"' in sh and sh.count('chmod 2770 "$dir"') >= 2, 'bot data root/instance directories preserve group-write setgid semantics')

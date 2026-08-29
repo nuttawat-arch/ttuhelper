@@ -13,6 +13,11 @@ Command: /usr/local/bin/ttuhelper
 
 ตัวติดตั้งไม่ลบหรือเขียนทับคำสั่ง `tthelper` ของระบบเก่า
 
+
+## Telegram ส่วนกลาง
+
+TTUHelper 1.5.7+ รองรับ Telegram Bot Token กลางที่จัดการจาก SNTalkBot Web Manager 1.1.18+. Token ถูกเก็บแบบ root-only บน host และส่งเข้า container ตอน start/restart; ไม่ต้องคัดลอก token ลง config ของทุก instance.
+
 ## ติดตั้ง
 
 เลือกได้ 2 วิธีตามสะดวก
