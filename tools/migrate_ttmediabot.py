@@ -130,7 +130,6 @@ CURRENT_CHOICE_RULES = {
 CURRENT_RANGE_RULES = {
     ("server", "tcp_port"): (1, 65535),
     ("server", "udp_port"): (1, 65535),
-    ("bot", "random_message_interval"): (0, 1000000),
     ("bot", "char_limit"): (0, 1000000),
     ("bot", "video_deletion_timer"): (0, 1000000),
     ("bot", "jail_timer_seconds"): (0, 1000000),

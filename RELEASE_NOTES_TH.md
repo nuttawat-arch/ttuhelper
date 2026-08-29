@@ -1,3 +1,25 @@
+# TTUHelper 1.5.6 — 5.1.13 Config Schema Cleanup
+
+- ใช้ SNTalkBot 5.1.13 `config_default.ini` เป็น schema authority ระหว่าง create/repair/update จึงไม่คง key ของ legacy `messages.txt` scheduler ที่ถูกถอดแล้ว
+- TTMediaBot migration ยังคงรองรับ `config.json` แบบ legacy เป็น input one-shot และเขียน migration report JSON เพื่อ audit เท่านั้น; ไม่ใช้ JSON เป็น realtime runtime state
+- ถอด range rule ของ `random_message_interval`; ค่าที่ต้อง preserve จะถูก SNTalkBot 5.1.13 migrate ไป `[global_broadcast]` ตาม contract ใหม่
+- command count และ batch update/queue-preservation contract เดิมยังคง 22 commands
+
+# TTUHelper 1.5.5 — Legacy Channel ID Migration Compatibility
+
+- หน้าสร้าง instance รับ Channel ID หรือ full channel path ในช่องเดียว
+- migration regression ล็อกเคส TTMediaBot `teamtalk.channel = 8` ให้คงเป็น `default_channel = 8` โดยไม่บังคับแปลงชื่อห้อง
+- พฤติกรรม queue-preservation/batch update จาก 1.5.4 คงเดิม
+
+# TTUHelper 1.5.4 — Safe Batch Update / Persistent Queue Preflight
+
+- `update` ตรวจ config และความสามารถในการรักษาคิวของทุก running instance ให้ผ่านก่อนหยุดบอตตัวแรก
+- SNTalkBot 5.1.8+ ตรวจ `state.sqlite3` ด้วย SQLite `quick_check` และเทียบ queue count กับ local API; legacy 5.1.7 จะบล็อก update หาก API export รายละเอียดไม่ครบ เช่น count 600 แต่เห็นเพียง 250
+- เมื่อ preflight ผ่านจึงหยุด instance ทั้งชุดก่อน แล้ว recreate/start แบบ concurrent ลดอาการบอตทยอยออก/เข้า
+- แก้ queue-preflight JSON parsing และ cleanup trap ที่อาจเกิด `unbound variable` หลังงานสำเร็จ
+- config migration ใช้ `config_default.ini` ปัจจุบันเป็น authoritative optional schema และย้าย Telegram settings เก่าไป `[telegram]` โดยไม่พิมพ์ secret
+- public commands ยังคง 22 คำสั่งเดิม
+
 # TTUHelper 1.5.3 — TTMediaBot Migration Self-Repair
 
 - Migration เป็น template-first + allowlist mapping ตาม config v1 จริง ไม่ copy raw config

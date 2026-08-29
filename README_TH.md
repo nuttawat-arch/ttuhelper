@@ -216,3 +216,8 @@ sudo ttuhelper doctor
 ```
 
 คำสั่ง `git reset --hard` ด้านบนกระทบเฉพาะ Git working tree `/opt/ttuhelper`; ไม่แตะ `/etc/default/ttuhelper` และไม่แตะข้อมูล instance ใน `/opt/sntalkbot-bots/`
+
+
+### Channel ID / path compatibility
+
+ค่า `default_channel` รับได้ทั้ง TeamTalk Channel ID เช่น `8`/`"8"` และพาธห้องรูปแบบเดิม เช่น `/music` ในช่องเดียวกัน ค่า `teamtalk.channel` แบบตัวเลขจาก TTMediaBot รุ่นเก่าจะถูกนำเข้าใช้งานต่อได้โดยไม่ต้องให้ผู้ใช้แปลงเป็นชื่อห้องเอง และสามารถใช้คำสั่ง `gcid`/`cid` ดู Channel ID แล้วนำตัวเลขมาใส่ได้โดยตรง

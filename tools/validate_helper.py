@@ -51,6 +51,7 @@ for token in ('has curl || missing+=(curl)','has python3 || missing+=(python3)',
 need('grep -q \'^TTU_API_PORT_MIN=\'' in installer and 'grep -q \'^TTU_API_PORT_MAX=\'' in installer, 'upgrade installer adds only missing API range settings without replacing existing config')
 need('--repair-existing' in installer and 'Checking previously migrated TTMediaBot instances' in installer, 'helper installer automatically repairs previously migrated configs after pulling the current image')
 need('repair_migrated_configs "$name"' in sh and 'repair_migrated_configs()' in sh, 'run/restart repairs migrated config before container recreation')
+need('Channel ID or full path (default: /; e.g. 8 or /music)' in sh, 'new-instance prompt accepts Channel ID or historical channel path in one field')
 
 # Migration schema regression: build from the current template, import only
 # supported legacy values, reject invalid scalar/range values, and never copy the
@@ -68,7 +69,7 @@ try:
             'general':{'language':'xx-unsupported','send_channel_messages':'yes','cache_file_name':'TTMediaBotCache.dat','blocked_commands':['/p','/s'],'delete_uploaded_files_after':300,'time_format':'%H:%M','start_commands':[],'legacy_only':'drop-me'},
             'sound_devices':{'output_device':1,'input_device':5},
             'player':{'default_volume':'not-a-number','max_volume':9999,'seek_step':'7','volume_fading':True,'volume_fading_interval':0.025,'player_options':{},'old_device':42},
-            'teamtalk':{'hostname':'server.example','tcp_port':'10333','udp_port':'invalid','encrypted':'true','username':'botuser','password':'legacy-secret','nickname':['bad-container'],'channel':'/music','channel_password':'','status':'','gender':'unknown','reconnection_attempts':-1,'reconnection_timeout':10,'users':{'admins':['alice',{'bad':'object'},'alice'],'banned_users':['old-ban'],'other':['drop']},'event_handling':{'load_event_handlers':False,'event_handlers_file_name':'event_handlers.py'},'license_name':'name','license_key':'key','unknown_teamtalk':'drop'},
+            'teamtalk':{'hostname':'server.example','tcp_port':'10333','udp_port':'invalid','encrypted':'true','username':'botuser','password':'legacy-secret','nickname':['bad-container'],'channel':8,'channel_password':'','status':'','gender':'unknown','reconnection_attempts':-1,'reconnection_timeout':10,'users':{'admins':['alice',{'bad':'object'},'alice'],'banned_users':['old-ban'],'other':['drop']},'event_handling':{'load_event_handlers':False,'event_handlers_file_name':'event_handlers.py'},'license_name':'name','license_key':'key','unknown_teamtalk':'drop'},
             'services':{'default_service':'yt','vk':{'enabled':True,'token':'vk-secret'},'yam':{'enabled':True,'token':'yam-secret'},'yt':{'enabled':True,'cookiefile_path':'/home/ttbot/data/cookies.txt'},'youtube':{'api_key':'unsupported-secret'}},
             'logger':{'log':True,'level':'INFO','format':'legacy-format','mode':'FILE','file_name':'TTMediaBot.log','max_file_size':0,'backup_count':0},
             'shortening':{'shorten_links':False,'service':'clckru','service_params':{}},
@@ -82,6 +83,7 @@ try:
         good=good and cfg.getint('playback','default_volume')==80 and cfg.getint('playback','max_volume')==150 and cfg.getint('playback','seek_step')==7 and cfg.getboolean('playback','fade_enabled') is True and cfg.getint('playback','volume_fading')==0
         good=good and cfg.getint('server','udp_port')==10333 and cfg.getboolean('server','encrypted') is True
         good=good and cfg.get('accounts','authorized_users')=='alice'
+        good=good and cfg.get('bot','default_channel')=='8'
         good=good and not (dest/'LegacyBot'/'limits.conf').exists()
         good=good and not (dest/'LegacyBot'/'legacy-config.json').exists()
         reports=list((dest/'.migration-reports').glob('*.json'))
@@ -214,6 +216,93 @@ exit 0
         need(False, f'unmanaged Docker collision runtime regression: {exc!r}')
 else:
     print('[INFO] unmanaged Docker collision runtime regression deferred to Linux validator')
+
+
+# Batch-update regression with fake Docker and real local HTTP APIs. No running
+# instance may be stopped before every queue passes persistence verification.
+if os.name != 'nt' and bash:
+    import threading, socket, sqlite3
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            t=Path(td); bindir=t/'bin'; bindir.mkdir(); bots=t/'bots'; bots.mkdir()
+            marker_file=t/'docker-update-actions.log'
+            template=t/'config_default.ini'; template.write_text('[features]\nplayer_enabled=True\nserver_management_enabled=False\n',encoding='utf-8')
+            dummy_migrator=t/'dummy_migrator.py'; dummy_migrator.write_text('raise SystemExit(0)\n',encoding='utf-8')
+
+            counts={}; servers=[]
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self,*a): pass
+                def do_GET(self):
+                    expected='Bearer '+self.server.token
+                    if self.headers.get('Authorization') != expected:
+                        self.send_response(401); self.end_headers(); return
+                    import json as _json
+                    payload={'ok':True,'queue_count':counts[self.server.name],'queue_index':0,'items':[{'title':'Q0','link':'u0'}],'next_cursor':None,'complete':counts[self.server.name] <= 1}
+                    raw=_json.dumps(payload).encode()
+                    self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(raw))); self.end_headers(); self.wfile.write(raw)
+            for name in ('a','b'):
+                sock=socket.socket(); sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]; sock.close()
+                token='token-'+name; counts[name]=3
+                d=bots/name; d.mkdir()
+                (d/'config.ini').write_text('[features]\nplayer_enabled=True\nserver_management_enabled=False\n',encoding='utf-8')
+                (d/'instance.conf').write_text(f'mode=player\napi_port={port}\napi_token={token}\napi_bind=127.0.0.1\n',encoding='utf-8')
+                con=sqlite3.connect(d/'state.sqlite3'); con.execute('CREATE TABLE queue_entries(seq INTEGER PRIMARY KEY,payload TEXT NOT NULL)'); con.executemany('INSERT INTO queue_entries(seq,payload) VALUES(?,?)',[(1024*i,'{}') for i in range(1,4)]); con.commit(); con.close()
+                srv=ThreadingHTTPServer(('127.0.0.1',port),Handler); srv.name=name; srv.token=token
+                th=threading.Thread(target=srv.serve_forever,daemon=True); th.start(); servers.append(srv)
+
+            fake=bindir/'docker'
+            fake.write_text(r'''#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${TTU_TEST_MARKER:?}"
+case "${1:-}" in
+  info|pull) exit 0 ;;
+  image) [[ "${2:-}" == inspect ]] && exit 0 ;;
+  ps) printf 'a\nb\n'; exit 0 ;;
+  container) [[ "${2:-}" == inspect ]] && exit 1 ;;
+  inspect) exit 1 ;;
+  rm) printf 'STOP:%s\n' "${*: -1}" >> "${TTU_TEST_MARKER:?}"; exit 0 ;;
+  run)
+    if [[ " $* " == *" --rm --entrypoint cat "* ]]; then cat "${TTU_TEST_TEMPLATE:?}"; exit 0; fi
+    name=''
+    args=("$@")
+    for ((i=0;i<${#args[@]};i++)); do [[ "${args[$i]}" == '--name' ]] && name="${args[$((i+1))]}"; done
+    [[ -n "$name" ]] && printf 'START:%s\n' "$name" >> "${TTU_TEST_MARKER:?}"
+    exit 0 ;;
+esac
+exit 0
+''',encoding='utf-8'); fake.chmod(0o755)
+            sysctl=bindir/'systemctl'; sysctl.write_text('#!/usr/bin/env bash\n[[ "${1:-}" == is-active ]] && exit 0\nexit 0\n',encoding='utf-8'); sysctl.chmod(0o755)
+            env=os.environ.copy(); env.update({
+                'PATH':str(bindir)+os.pathsep+env.get('PATH',''),
+                'TTU_BOTS_ROOT':str(bots),'TTU_TEST_MARKER':str(marker_file),
+                'TTU_TEST_TEMPLATE':str(template),'TTU_HELPER_CONFIG':str(t/'missing.conf'),
+                'TTU_MIGRATOR_PATH':str(dummy_migrator),'TTU_API_PORT_MIN':'30000','TTU_API_PORT_MAX':'30999',
+            })
+            counts['b']=4
+            cp1=subprocess.run([bash,str(ROOT/'ttuhelper.sh'),'update'],env=env,capture_output=True,text=True,timeout=30)
+            calls1=marker_file.read_text(encoding='utf-8') if marker_file.exists() else ''
+            blocked=cp1.returncode != 0 and '[BLOCKED]' in (cp1.stdout+cp1.stderr) and 'STOP:' not in calls1 and 'START:' not in calls1
+            need(blocked,'queue preflight mismatch blocks the whole update before stopping any instance')
+            if not blocked:
+                print('[DETAIL] blocked update:',cp1.returncode,cp1.stdout,cp1.stderr,calls1,sep='\n')
+
+            marker_file.write_text('',encoding='utf-8'); counts['b']=3
+            cp2=subprocess.run([bash,str(ROOT/'ttuhelper.sh'),'update'],env=env,capture_output=True,text=True,timeout=30)
+            calls2=marker_file.read_text(encoding='utf-8') if marker_file.exists() else ''
+            lines=[x.strip() for x in calls2.splitlines() if x.strip()]
+            stop_positions=[i for i,x in enumerate(lines) if x.startswith('STOP:')]
+            start_positions=[i for i,x in enumerate(lines) if x.startswith('START:')]
+            passed=cp2.returncode==0 and {lines[i] for i in stop_positions}=={'STOP:a','STOP:b'} and {lines[i] for i in start_positions}=={'START:a','START:b'}
+            passed=passed and bool(stop_positions) and bool(start_positions) and max(stop_positions) < min(start_positions)
+            need(passed,'verified queues are stopped as one batch before all instances are recreated')
+            if not passed:
+                print('[DETAIL] successful update:',cp2.returncode,cp2.stdout,cp2.stderr,calls2,sep='\n')
+            for srv in servers: srv.shutdown(); srv.server_close()
+    except Exception as exc:
+        need(False,f'batch update queue-preservation runtime regression: {exc!r}')
+else:
+    print('[INFO] batch update queue-preservation runtime regression deferred to Linux validator')
 
 # Linux release files must remain LF-only.  This catches Windows checkout/ZIP
 # regressions before they become /bin/bash ^M failures on the server.

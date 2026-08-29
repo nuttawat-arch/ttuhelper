@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.5.3"
+HELPER_VERSION="1.5.6"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -212,16 +212,22 @@ repair_migrated_configs() {
     fi
   fi
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  docker run --rm --entrypoint cat "$IMAGE_NAME" /app/config_default.ini > "$tmp/config_default.ini"
-  [[ -s "$tmp/config_default.ini" ]] || { warn "Could not read current config template; migrated-config repair skipped."; return 0; }
+  if ! docker run --rm --entrypoint cat "$IMAGE_NAME" /app/config_default.ini > "$tmp/config_default.ini"; then
+    warn "Could not read current config template; migrated-config repair skipped."
+    rm -rf "$tmp"
+    return 0
+  fi
+  if [[ ! -s "$tmp/config_default.ini" ]]; then
+    warn "Could not read current config template; migrated-config repair skipped."
+    rm -rf "$tmp"
+    return 0
+  fi
   args=("$MIGRATOR_PATH" --repair-existing --dest-root "$BOTS_ROOT" --template "$tmp/config_default.ini")
   if [[ -n "$only_name" ]]; then args+=(--repair-name "$only_name"); fi
   if ! python3 "${args[@]}"; then
     warn "Automatic repair of migrated SNTalkBot config reported an error; existing config/data were kept."
   fi
   rm -rf "$tmp"
-  trap - RETURN
 }
 
 make_empty_cookie_file() {
@@ -304,7 +310,7 @@ create_bot() {
   case "${answer,,}" in y|yes) encrypted=True ;; *) encrypted=False ;; esac
   read -rp "TeamTalk username (optional): " username
   read -rsp "TeamTalk password (optional): " password; echo
-  read -rp "Channel path (default: /): " channel; channel="${channel:-/}"
+  read -rp "Channel ID or full path (default: /; e.g. 8 or /music): " channel; channel="${channel:-/}"
   read -rsp "Channel password (optional): " channel_password; echo
   read -rp "Bot admin usernames, comma-separated (optional): " authorized
 
@@ -678,18 +684,167 @@ stop_all() {
   say "Stopped $count helper-managed container(s)."
 }
 
-update_running() {
-  local names name count=0
-  names="$(docker ps --filter "label=$LABEL_KEY=$LABEL_VALUE" --format '{{.Names}}')"
-  pull_image
-  repair_migrated_configs
+preserve_queue_before_update() {
+  local name="$1" dir conf port token state_db
+  dir="$(bot_dir "$name")"
+  conf="$dir/instance.conf"
+  [[ -r "$conf" ]] || { warn "[BLOCKED] $name: instance.conf is missing."; return 1; }
+  port="$(conf_get "$conf" api_port || true)"
+  token="$(conf_get "$conf" api_token || true)"
+  [[ "$port" =~ ^[0-9]+$ && -n "$token" ]] || {
+    warn "[BLOCKED] $name: local realtime API metadata is missing; update was NOT started."
+    return 1
+  }
+  state_db="$dir/state.sqlite3"
+
+  if ! TTU_QUEUE_PORT="$port" TTU_QUEUE_TOKEN="$token" TTU_QUEUE_DB="$state_db" \
+    python3 <<'PYQUEUE'
+import json, os, sqlite3, sys, urllib.error, urllib.parse, urllib.request
+from pathlib import Path
+
+port=int(os.environ['TTU_QUEUE_PORT'])
+token=os.environ['TTU_QUEUE_TOKEN']
+db_path=Path(os.environ['TTU_QUEUE_DB'])
+headers={'Authorization':f'Bearer {token}','Accept':'application/json'}
+
+def get_json(path):
+    req=urllib.request.Request(f'http://127.0.0.1:{port}{path}',headers=headers)
+    with urllib.request.urlopen(req, timeout=3.0) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+# New SQLite-backed releases already commit every queue mutation to the same
+# persistent DB. Validate DB/API counts; no copy/export is needed and there is
+# no total queue ceiling.
+if db_path.exists():
+    try:
+        payload=get_json('/v1/queue-export?limit=1')
+    except Exception as exc:
+        print(f'[BLOCKED] persistent queue API unavailable: {type(exc).__name__}: {exc}', file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        con=sqlite3.connect(str(db_path), timeout=10)
+        con.execute('PRAGMA busy_timeout=10000')
+        integrity=con.execute('PRAGMA quick_check').fetchone()[0]
+        local_count=int(con.execute('SELECT COUNT(*) FROM queue_entries').fetchone()[0])
+        con.close()
+    except Exception as exc:
+        print(f'[BLOCKED] persistent queue database cannot be verified: {exc}', file=sys.stderr)
+        raise SystemExit(2)
+    api_count=int(payload.get('queue_count',-1))
+    if integrity!='ok' or api_count!=local_count:
+        print(f'[BLOCKED] persistent queue verification mismatch: API={api_count}, SQLite={local_count}, check={integrity}', file=sys.stderr)
+        raise SystemExit(2)
+    print(f'Persistent queue verified: {local_count} item(s).')
+    raise SystemExit(0)
+
+# Legacy releases have no state.sqlite3 and only expose queue detail through
+# /v1/status. 5.1.7 deliberately exposes at most 250 detail rows, so if its
+# true count is larger we MUST block rather than silently discard the tail.
+try:
+    payload=get_json('/v1/status')
+except Exception as exc:
+    print(f'[BLOCKED] legacy queue API unavailable: {type(exc).__name__}: {exc}', file=sys.stderr)
+    raise SystemExit(2)
+queue=payload.get('queue') or []
+count=int(payload.get('queue_count',len(queue)) or 0)
+index=int(payload.get('queue_index',-1) if payload.get('queue_index') is not None else -1)
+if len(queue)!=count:
+    print(f'[BLOCKED] legacy queue has {count} item(s) but API exported only {len(queue)}; update was NOT started.', file=sys.stderr)
+    raise SystemExit(3)
+
+db_path.parent.mkdir(parents=True,exist_ok=True)
+con=sqlite3.connect(str(db_path),timeout=10,isolation_level=None)
+try:
+    con.execute('PRAGMA journal_mode=WAL')
+    con.execute('PRAGMA synchronous=NORMAL')
+    con.execute('BEGIN IMMEDIATE')
+    con.execute('CREATE TABLE IF NOT EXISTS state_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+    con.execute('CREATE TABLE IF NOT EXISTS queue_entries(seq INTEGER PRIMARY KEY,payload TEXT NOT NULL)')
+    con.execute('DELETE FROM queue_entries')
+    con.executemany(
+        'INSERT INTO queue_entries(seq,payload) VALUES(?,?)',
+        [((i+1)*1024,json.dumps(dict(item),ensure_ascii=False,separators=(',',':'))) for i,item in enumerate(queue)]
+    )
+    con.execute(
+        "INSERT INTO state_meta(key,value) VALUES('queue_index',?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(index),)
+    )
+    con.execute('COMMIT')
+except Exception:
+    if con.in_transaction: con.execute('ROLLBACK')
+    raise
+finally:
+    con.close()
+print(f'Legacy queue preserved into SQLite: {count} item(s), current index {index}.')
+PYQUEUE
+  then
+    return 1
+  fi
+  # A legacy migration is performed as root; hand the DB back to the same
+  # persistent uid/gid used by the container before any restart occurs.
+  chown 10001:10001 "$state_db" "$state_db-wal" "$state_db-shm" 2>/dev/null || true
+  chmod 0660 "$state_db" "$state_db-wal" "$state_db-shm" 2>/dev/null || true
+  return 0
+}
+
+preflight_running_queues() {
+  local names="$1" name failed=0
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    say "Recreating $name with $IMAGE_NAME ..."
-    run_bot "$name" 1
-    count=$((count+1))
+    say "Checking persistent queue safety for $name ..."
+    if ! preserve_queue_before_update "$name"; then
+      failed=1
+    fi
   done <<< "$names"
-  say "Updated $count running instance(s). Persistent data/config was preserved."
+  if [[ "$failed" == "1" ]]; then
+    warn "[BLOCKED] Queue-preservation preflight failed. Update was NOT started; no running bot was stopped."
+    return 1
+  fi
+}
+
+batch_stop_names() {
+  local names="$1" name pids=() failed=0
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    (docker rm -f "$name" >/dev/null) & pids+=("$!")
+  done <<< "$names"
+  for name in "${pids[@]}"; do wait "$name" || failed=1; done
+  [[ "$failed" == "0" ]] || fail "Unable to stop every running instance; inspect Docker state before retrying."
+}
+
+batch_start_names() {
+  local names="$1" name pids=() labels=() i failed=0
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    labels+=("$name")
+    (run_bot "$name" 0) & pids+=("$!")
+  done <<< "$names"
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      warn "Failed to start ${labels[$i]}."
+      failed=1
+    fi
+  done
+  [[ "$failed" == "0" ]] || fail "One or more instances failed to start; persistent data was kept."
+}
+
+update_running() {
+  local names count
+  names="$(docker ps --filter "label=$LABEL_KEY=$LABEL_VALUE" --format '{{.Names}}')"
+  count="$(printf '%s\n' "$names" | sed '/^$/d' | wc -l | tr -d ' ')"
+  pull_image
+  repair_migrated_configs
+  [[ "$count" != "0" ]] || { say "No running helper-managed instances to update."; return 0; }
+
+  # No lifecycle action is allowed until every queue has a proven persistent
+  # copy. This is especially important on the first upgrade from RAM-only 5.1.7.
+  preflight_running_queues "$names" || return 1
+
+  say "Queue preflight passed for all $count running instance(s). Stopping the batch ..."
+  batch_stop_names "$names"
+  say "Starting all $count instance(s) concurrently with $IMAGE_NAME ..."
+  batch_start_names "$names"
+  say "Updated $count running instance(s). Persistent data/config/queue state was preserved."
 }
 
 migrate_ttmediabot() {
