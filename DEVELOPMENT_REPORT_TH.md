@@ -1,4 +1,10 @@
-# DEVELOPMENT REPORT — TTUHelper 1.5.3
+# Development Report — TTUHelper 1.5.8
+
+- `ttuhelper new` สำหรับ Player/Full อ่าน `/app/defaults/cookies.txt` จาก Docker image ที่เลือกและติดตั้งเป็น persistent `cookies.txt` ทันที
+- ตรวจ Netscape data row ก่อนสร้าง instance; ถ้า image ไม่มี default cookie ที่ใช้งานได้จะหยุดแทนการสร้างไฟล์ว่างแบบเงียบ ๆ
+- Server Manager-only ยังคงไม่ต้องพก YouTube cookie
+- การอัปเดต instance เดิมไม่ overwrite cookie ที่เจ้าของแทนเอง
+
 
 - ตรวจเทียบกับ TTMediaBot `config.json` v1 ตัวจริงที่ผู้ใช้ส่งมา: general/sound_devices/player/teamtalk/services/logger/shortening ครบ
 - field ที่รองรับจริงถูก map 23 path; field ที่ไม่มี semantic equivalent เช่น cache/time/start_commands, device IDs, fade interval, banned users/event handlers, services tokens/path, logger และ shortening ถูกทิ้งโดยตั้งใจ

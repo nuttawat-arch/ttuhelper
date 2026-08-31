@@ -1,3 +1,12 @@
+# TTUHelper 1.5.8 — New-instance Cookie Bootstrap
+
+- Player/Full ที่สร้างใหม่ได้รับ default YouTube cookies จริงจาก SNTalkBot Docker image ตั้งแต่ขั้นสร้าง instance
+- ยกเลิกพฤติกรรมสร้าง `cookies.txt` header-only สำหรับ Player/Full ซึ่งเคยกัน Docker first-run bootstrap โดยไม่ตั้งใจ
+- Server Manager-only ไม่คัดลอก cookie และ `cks/cks-all/cks-check` ทำงานเดิม
+- cookie ที่เจ้าของติดตั้งเองภายหลังยังชนะและไม่ถูก update overwrite
+
+---
+
 # TTUHelper 1.5.7 — Central Telegram Environment
 
 - เมื่อมีการตั้งค่า Telegram ส่วนกลางจาก Web Manager, TTUHelper อ่าน `/etc/sntalkbot-telegram.env` แบบ root-only และส่ง token/default chat ID เข้า container ผ่าน environment ตอนสร้างหรือ restart

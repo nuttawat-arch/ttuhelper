@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.5.7"
+HELPER_VERSION="1.5.8"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -239,6 +239,19 @@ make_empty_cookie_file() {
 COOKIES
 }
 
+copy_bundled_default_cookies() {
+  local destination="$1"
+  # New Player/Full instances should own a real persistent bootstrap copy from
+  # the exact image they are created against.  This keeps TTUHelper creation
+  # consistent with Docker first-run bootstrap while never overwriting an
+  # existing user replacement.
+  docker run --rm --entrypoint cat "$IMAGE_NAME" /app/defaults/cookies.txt > "$destination"
+  [[ -s "$destination" ]] || fail "Bundled default YouTube cookies are missing from $IMAGE_NAME."
+  local rows
+  rows="$(awk -F '\t' 'BEGIN{n=0} /^[^#]/ && NF>=7 {n++} /^#HttpOnly_/ && NF>=7 {n++} END{print n}' "$destination")"
+  [[ "$rows" =~ ^[0-9]+$ && "$rows" -gt 0 ]] || fail "Bundled default YouTube cookies in $IMAGE_NAME are not a usable Netscape cookie set."
+}
+
 configure_from_template() {
   local path="$1"
   TTU_CFG="$path" \
@@ -330,7 +343,11 @@ create_bot() {
   tmp="$(mktemp -d)"
   docker run --rm --entrypoint cat "$IMAGE_NAME" /app/config_default.ini > "$tmp/config.ini"
   configure_from_template "$tmp/config.ini" "$hostname" "$tcp" "$udp" "$encrypted" "$nickname" "$username" "$password" "$channel" "$channel_password" "$authorized" "$player_enabled" "$server_management_enabled"
-  make_empty_cookie_file "$tmp/cookies.txt"
+  if [[ "$player_enabled" == "True" ]]; then
+    copy_bundled_default_cookies "$tmp/cookies.txt"
+  else
+    make_empty_cookie_file "$tmp/cookies.txt"
+  fi
 
   mkdir -p "$dir"
   install -m 0640 "$tmp/config.ini" "$dir/config.ini"

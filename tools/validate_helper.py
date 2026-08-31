@@ -18,6 +18,8 @@ need(len(expected)==22, 'TTUHelper public command catalog contains 22 commands')
 for token in ('validate_cookie_file()', '#HttpOnly_', 'install -o 10001 -g 10001 -m 0640', 'Restart the instance to force yt-dlp to reload'):
     need(token in sh, f'cookie safety behavior present: {token}')
 need((ROOT/'YOUTUBE_COOKIES_TH.md').is_file(), 'cookie guide is packaged')
+need('copy_bundled_default_cookies()' in sh and '/app/defaults/cookies.txt' in sh, 'new Player/Full instances copy bundled default cookies from the selected Docker image')
+need('if [[ "$player_enabled" == "True" ]]; then' in sh and 'copy_bundled_default_cookies "$tmp/cookies.txt"' in sh, 'Server Manager-only instances do not require the Player cookie bootstrap')
 need('cookies.txt' in (ROOT/'.gitignore').read_text(encoding='utf-8'), 'cookies are ignored by Git')
 need(re.search(r'cks\)\s+update_cookies\s+"\$\{1:-\}"\s+"\$\{2:-\}"', sh) is not None, 'cks accepts an optional file path')
 need(re.search(r'cks-all\)\s+update_all_cookies\s+"\$\{1:-\}"', sh) is not None, 'cks-all accepts an optional file path')
