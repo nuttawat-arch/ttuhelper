@@ -77,6 +77,7 @@ fi
 install -m 0755 ttuhelper.sh /usr/local/bin/ttuhelper
 install -d -m 0755 /usr/local/lib/ttuhelper
 install -m 0755 tools/migrate_ttmediabot.py /usr/local/lib/ttuhelper/migrate_ttmediabot.py
+install -m 0755 tools/recover_instance_config.py /usr/local/lib/ttuhelper/recover_instance_config.py
 mkdir -p "$BOTS_ROOT"
 chown root:10001 "$BOTS_ROOT" 2>/dev/null || true
 chmod 2770 "$BOTS_ROOT"

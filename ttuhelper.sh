@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HELPER_VERSION="1.5.8"
+HELPER_VERSION="1.5.10"
 CONFIG_FILE="${TTU_HELPER_CONFIG:-/etc/default/ttuhelper}"
 if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -226,7 +226,8 @@ repair_migrated_configs() {
   args=("$MIGRATOR_PATH" --repair-existing --dest-root "$BOTS_ROOT" --template "$tmp/config_default.ini")
   if [[ -n "$only_name" ]]; then args+=(--repair-name "$only_name"); fi
   if ! python3 "${args[@]}"; then
-    warn "Automatic repair of migrated SNTalkBot config reported an error; existing config/data were kept."
+    rm -rf "$tmp"
+    fail "[BLOCKED] Config repair failed. Existing container/config were kept; fix or recover the connection settings first."
   fi
   rm -rf "$tmp"
 }
@@ -245,6 +246,10 @@ copy_bundled_default_cookies() {
   # the exact image they are created against.  This keeps TTUHelper creation
   # consistent with Docker first-run bootstrap while never overwriting an
   # existing user replacement.
+  if [[ -s "$BOTS_ROOT/.shared/cookies.txt" ]]; then
+    cp -p -- "$BOTS_ROOT/.shared/cookies.txt" "$destination"
+    return
+  fi
   docker run --rm --entrypoint cat "$IMAGE_NAME" /app/defaults/cookies.txt > "$destination"
   [[ -s "$destination" ]] || fail "Bundled default YouTube cookies are missing from $IMAGE_NAME."
   local rows
@@ -413,6 +418,7 @@ run_bot() {
   [[ -d "$dir" && -f "$dir/config.ini" ]] || fail "Instance '$name' not found in $BOTS_ROOT"
   ensure_image
   repair_migrated_configs "$name"
+  preflight_instance_config "$name" || return 1
 
   refuse_unmanaged_collision "$name"
   if docker container inspect "$name" >/dev/null 2>&1; then
@@ -436,6 +442,7 @@ run_bot() {
   read_central_telegram_env
   sink="ttu_${name//[^A-Za-z0-9_]/_}"
 
+  install -d -o 10001 -g 10001 -m 0750 "$BOTS_ROOT/.shared" "$dir/sounds"
   docker run -d \
     --name "$name" \
     --network host \
@@ -445,6 +452,8 @@ run_bot() {
     --label "$DATA_LABEL=$dir" \
     "${LIMIT_ARGS[@]}" \
     -v "$dir:/app/data" \
+    -v "$BOTS_ROOT/.shared:/app/shared:ro" \
+    -e SNTALKBOT_MANAGED_INSTANCE=1 \
     -e TTUTIL_CONFIG=/app/data/config.ini \
     -e TTUTIL_DATA_DIR=/app/data \
     -e "TTUTIL_PULSE_SINK=$sink" \
@@ -472,9 +481,35 @@ stop_bot() {
   fi
 }
 
+preflight_instance_config() {
+  local name="$1" dir
+  dir="$(bot_dir "$name")"
+  SNT_CONFIG_PATH="$dir/config.ini" python3 - <<'PYCFG'
+import configparser, os, sys
+try:
+    cfg = configparser.ConfigParser(interpolation=None)
+    with open(os.environ['SNT_CONFIG_PATH'], encoding='utf-8') as handle:
+        cfg.read_file(handle)
+    host = cfg.get('server', 'address').strip()
+    if not host or host.casefold() in {'change_me', 'changeme', 'change me'}:
+        raise ValueError('server.address is missing or placeholder')
+    if cfg.get('server', 'username', fallback='').strip().casefold() in {'change_me','changeme','change me'}:
+        raise ValueError('placeholder username')
+    cfg.getboolean('server', 'encrypted', fallback=False)
+    for key in ('tcp_port', 'udp_port'):
+        if not 1 <= cfg.getint('server', key, fallback=cfg.getint('server', 'port', fallback=10333)) <= 65535:
+            raise ValueError('invalid connection port')
+except Exception as exc:
+    print('[BLOCKED] Connection config is missing/invalid (' + type(exc).__name__ + '). Existing container was not stopped. Recover config before restart/update.', file=sys.stderr)
+    sys.exit(1)
+PYCFG
+}
+
 restart_bot() {
   local name="$1"
   [[ -n "$name" ]] || fail "Usage: ttuhelper restart <name>"
+  repair_migrated_configs "$name"
+  preflight_instance_config "$name" || return 1
   stop_bot "$name"
   run_bot "$name" 1
 }
@@ -591,7 +626,11 @@ install_cookie_file() {
   tmp="$(mktemp)"
   cp -- "$source" "$tmp"
   validate_cookie_file "$tmp"
-  install -o 10001 -g 10001 -m 0640 "$tmp" "$destination"
+  local staged
+  staged="$(mktemp "${destination}.XXXXXX")"
+  install -o 10001 -g 10001 -m 0640 "$tmp" "$staged"
+  touch -r "$source" "$staged"
+  mv -f -- "$staged" "$destination"
   rm -f "$tmp"
 }
 
@@ -608,11 +647,11 @@ update_cookies() {
     tmp="$(mktemp)"
     cat > "$tmp"
     validate_cookie_file "$tmp"
-    install -o 10001 -g 10001 -m 0640 "$tmp" "$dir/cookies.txt"
+    install_cookie_file "$tmp" "$dir/cookies.txt"
     rm -f "$tmp"
   fi
   say "Updated cookies for '$name' ($COOKIE_DATA_ROWS records; $COOKIE_YOUTUBE_ROWS YouTube records)."
-  say "Restart the instance to force yt-dlp to reload the new session: sudo ttuhelper restart $name"
+  say "Current bot builds reload the latest cookies on their next extraction; older builds require: sudo ttuhelper restart $name"
 }
 
 update_all_cookies() {
@@ -626,6 +665,8 @@ update_all_cookies() {
     cat > "$tmp"
   fi
   validate_cookie_file "$tmp"
+  install -d -o 10001 -g 10001 -m 0750 "$BOTS_ROOT/.shared"
+  install_cookie_file "$tmp" "$BOTS_ROOT/.shared/cookies.txt"
   shopt -s nullglob
   for d in "$BOTS_ROOT"/*; do
     [[ -d "$d" && -f "$d/config.ini" ]] || continue
@@ -633,12 +674,12 @@ update_all_cookies() {
       skipped=$((skipped+1))
       continue
     fi
-    install -o 10001 -g 10001 -m 0640 "$tmp" "$d/cookies.txt"
+    install_cookie_file "$tmp" "$d/cookies.txt"
     count=$((count+1))
   done
   rm -f "$tmp"
   say "Updated cookies for $count Player/Full instance(s) ($COOKIE_DATA_ROWS records; $COOKIE_YOUTUBE_ROWS YouTube records); skipped $skipped Server Manager instance(s)."
-  say "Restart running Player/Full instances (or run sudo ttuhelper update) so yt-dlp reloads the new session."
+  say "Saved shared default for future Player/Full instances. Current bot builds reload on next extraction; older builds require an update/restart."
 }
 
 check_cookies() {
@@ -870,6 +911,9 @@ update_running() {
 
   # No lifecycle action is allowed until every queue has a proven persistent
   # copy. This is especially important on the first upgrade from RAM-only 5.1.7.
+  while IFS= read -r name; do
+    [[ -z "$name" ]] || preflight_instance_config "$name" || return 1
+  done <<< "$names"
   preflight_running_queues "$names" || return 1
 
   say "Queue preflight passed for all $count running instance(s). Stopping the batch ..."

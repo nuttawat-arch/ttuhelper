@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import tempfile
+from contextlib import contextmanager
 import configparser
 import json
 import re
@@ -158,10 +161,72 @@ CURRENT_FLOAT_RANGE_RULES = {
 }
 
 
+# Identity must never be inferred from template defaults during routine repair.
+IDENTITY_KEYS = {
+    ("server", "address"), ("server", "tcp_port"), ("server", "udp_port"),
+    ("server", "username"), ("server", "password"), ("server", "encrypted"),
+    ("bot", "default_channel"), ("bot", "channel_password"),
+    ("teamtalk_license", "license_name"), ("teamtalk_license", "license_key"),
+}
+PLACEHOLDERS = {"change_me", "changeme", "change me", "your_server", "your-server"}
+
+
+def normalize_connection(cfg):
+    aliases = {
+        "address": (("server", "hostname"), ("server", "host"), ("teamtalk", "hostname")),
+        "tcp_port": (("server", "port"), ("teamtalk", "tcp_port")),
+        "udp_port": (("server", "port"), ("teamtalk", "udp_port")),
+        "username": (("teamtalk", "username"),), "password": (("teamtalk", "password"),),
+        "encrypted": (("teamtalk", "encrypted"),),
+    }
+    if not cfg.has_section("server"):
+        cfg.add_section("server")
+    for key, candidates in aliases.items():
+        value = cfg.get("server", key, fallback="", raw=True)
+        if value.strip() and value.strip().casefold() not in PLACEHOLDERS:
+            continue
+        for section, old_key in candidates:
+            if cfg.has_option(section, old_key):
+                candidate = cfg.get(section, old_key, raw=True)
+                if candidate.strip() and candidate.strip().casefold() not in PLACEHOLDERS:
+                    cfg.set("server", key, candidate)
+                    break
+    if cfg.has_option("server", "tcp_port") and not cfg.has_option("server", "udp_port"):
+        cfg.set("server", "udp_port", cfg.get("server", "tcp_port", raw=True))
+
+
+def connection_errors(cfg):
+    errors = []
+    host = cfg.get("server", "address", fallback="", raw=True).strip()
+    if not host or host.casefold() in PLACEHOLDERS:
+        errors.append("server.address")
+    username = cfg.get("server", "username", fallback="", raw=True).strip()
+    if not cfg.has_option("server", "username") or username.casefold() in PLACEHOLDERS:
+        errors.append("server.username")
+    for key in ("tcp_port", "udp_port"):
+        try:
+            value = float(cfg.get("server", key, raw=True))
+            if not value.is_integer() or not 1 <= value <= 65535:
+                raise ValueError
+        except (ValueError, configparser.Error):
+            errors.append("server." + key)
+    return errors
+
+
 def _read_ini(path: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser(interpolation=None)
     with path.open("r", encoding="utf-8") as fh:
         cfg.read_file(fh)
+    # ConfigParser section names are case-sensitive; historical editors were not.
+    for section in list(cfg.sections()):
+        lowered = section.lower()
+        if section != lowered:
+            if cfg.has_section(lowered):
+                raise ValueError("ambiguous duplicate section")
+            cfg.add_section(lowered)
+            for key, value in cfg.items(section, raw=True):
+                cfg.set(lowered, key, value)
+            cfg.remove_section(section)
     return cfg
 
 
@@ -304,8 +369,8 @@ def repair_one_migrated(template: Path, instance_dir: Path):
 
     Valid current values are preserved. Missing keys receive current defaults,
     unsupported keys disappear, and malformed typed values are safely coerced or
-    defaulted. If the INI itself cannot be parsed, rebuild from the preserved
-    legacy config.json when available rather than guessing credentials.
+    defaulted only outside connection identity. Unreadable connection files
+    block restart and require explicit recovery; old credentials are never guessed.
     """
     template_cfg = _read_ini(template)
     config_path = instance_dir / "config.ini"
@@ -324,29 +389,26 @@ def repair_one_migrated(template: Path, instance_dir: Path):
             parse_error = type(exc).__name__
 
     if current is None:
-        source_dir = _legacy_source_from_instance(instance_dir)
-        legacy_path = source_dir / "config.json" if source_dir else None
-        if legacy_path and legacy_path.is_file():
-            try:
-                old = load_json(legacy_path)
-                ok, _reason = is_legacy_ttmediabot_config(old)
-                if ok:
-                    new_cfg = convert_one(template, old, role)
-                    rebuilt_from_legacy = True
-                    repaired.append("config.ini:rebuilt-from-preserved-legacy")
-                else:
-                    return {"name": instance_dir.name, "changed": False, "failed": True, "reason": "legacy-source-no-longer-supported", "parse_error": parse_error}
-            except Exception as exc:
-                return {"name": instance_dir.name, "changed": False, "failed": True, "reason": f"legacy-rebuild-{type(exc).__name__}", "parse_error": parse_error}
-        else:
-            return {"name": instance_dir.name, "changed": False, "failed": True, "reason": "config-unparseable-and-legacy-source-missing", "parse_error": parse_error}
+        return {"name": instance_dir.name, "changed": False, "failed": True,
+                "reason": "config-unparseable-preserved-for-explicit-recovery", "parse_error": parse_error}
     else:
+        normalize_connection(current)
+        errors = connection_errors(current)
+        if errors:
+            return {"name": instance_dir.name, "changed": False, "failed": True,
+                    "reason": "connection-values-missing-or-invalid", "fields": errors}
         new_cfg = configparser.ConfigParser(interpolation=None)
+        new_cfg.read_string(_ini_string(current))
         for section in template_cfg.sections():
-            new_cfg.add_section(section)
+            if not new_cfg.has_section(section):
+                new_cfg.add_section(section)
             for key, default in template_cfg.items(section):
                 if current.has_option(section, key):
-                    value, action = _coerce_existing_value(section, key, current.get(section, key, raw=True), default)
+                    original = current.get(section, key, raw=True)
+                    if (section, key) in IDENTITY_KEYS and key not in ("tcp_port", "udp_port"):
+                        value, action = original, "kept"
+                    else:
+                        value, action = _coerce_existing_value(section, key, original, default)
                     new_cfg.set(section, key, value)
                     if action == "coerced":
                         repaired.append(f"{section}.{key}")
@@ -362,7 +424,12 @@ def repair_one_migrated(template: Path, instance_dir: Path):
             for key in current[section]:
                 if not template_cfg.has_option(section, key):
                     dropped.append(f"{section}.{key}")
-        _enforce_role(new_cfg, role)
+        # Preserve valid current feature choices; use migration role only to
+        # repair missing/invalid feature flags, never to reset current identity.
+        for key, flag in zip(("player_enabled", "server_management_enabled"), ROLE_MAP[role][:2]):
+            if not current.has_option("features", key) or strict_bool(current.get("features", key), None) is None:
+                set_if(new_cfg, "features", key, bool_text(flag))
+        dropped = []  # Unknown settings may belong to a newer installed release.
 
     old_text = config_path.read_text(encoding="utf-8", errors="replace") if config_path.is_file() else ""
     new_text = _ini_string(new_cfg)
@@ -372,14 +439,31 @@ def repair_one_migrated(template: Path, instance_dir: Path):
         "role": role, "repaired_fields": sorted(set(repaired)),
         "defaulted_fields": sorted(set(defaulted)), "dropped_fields": sorted(set(dropped)),
         "rebuilt_from_legacy": rebuilt_from_legacy, "parse_error": parse_error,
-        "_new_text": new_text,
+        "_new_text": new_text, "_expected_text": old_text,
     }
+
+
+@contextmanager
+def config_lock(instance_dir):
+    fd = os.open(instance_dir / "config.ini.lock", os.O_CREAT | os.O_RDWR, 0o660)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        if os.name != "nt":
+            import fcntl
+            if os.geteuid() == 0:
+                info = instance_dir.stat()
+                os.fchown(handle.fileno(), info.st_uid, info.st_gid)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name != "nt":
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def repair_existing_migrated(template: Path, dest_root: Path, only_name: str | None = None):
     dest_root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    report_dir = dest_root / ".migration-reports"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    report_dir = dest_root / "Document" / "MigrationReports"
     backup_root = dest_root / ".migration-repair-backups" / stamp
     report_dir.mkdir(parents=True, exist_ok=True)
     report_dir.chmod(0o700)
@@ -394,26 +478,37 @@ def repair_existing_migrated(template: Path, dest_root: Path, only_name: str | N
         candidates = [p for p in sorted(dest_root.iterdir(), key=lambda x: x.name.lower()) if p.is_dir() and not p.name.startswith(".") and _is_migrated_instance(p)]
 
     for instance_dir in candidates:
-        result = repair_one_migrated(template, instance_dir)
-        new_text = result.pop("_new_text", None)
-        if result.get("changed") and new_text is not None:
-            config_path = instance_dir / "config.ini"
-            backup_dir = backup_root / instance_dir.name
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            backup_dir.chmod(0o700)
-            if config_path.is_file():
-                shutil.copy2(config_path, backup_dir / "config.ini")
-                (backup_dir / "config.ini").chmod(0o600)
-            tmp = instance_dir / ".config.ini.repair.tmp"
-            tmp.write_text(new_text, encoding="utf-8")
-            tmp.chmod(0o640)
-            tmp.replace(config_path)
-            config_path.chmod(0o640)
-            result["backup"] = str(backup_dir / "config.ini") if (backup_dir / "config.ini").exists() else None
-            print(f"ซ่อม config ที่ migrate แล้ว: {instance_dir.name}")
-        elif result.get("failed"):
-            print(f"WARNING: ซ่อม {instance_dir.name} อัตโนมัติไม่ได้: {result.get('reason')}", file=sys.stderr)
-        results.append(result)
+        with config_lock(instance_dir):
+            result = repair_one_migrated(template, instance_dir)
+            new_text = result.pop("_new_text", None)
+            expected_text = result.pop("_expected_text", None)
+            if expected_text is not None and (instance_dir / "config.ini").read_text(encoding="utf-8") != expected_text:
+                result.update(changed=False, failed=True, reason="config-changed-concurrently")
+            if not result.get("failed") and result.get("changed") and new_text is not None:
+                config_path = instance_dir / "config.ini"
+                backup_dir = backup_root / instance_dir.name
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                backup_dir.chmod(0o700)
+                if config_path.is_file():
+                    shutil.copy2(config_path, backup_dir / "config.ini")
+                    (backup_dir / "config.ini").chmod(0o600)
+                fd, temp_name = tempfile.mkstemp(prefix=".config-repair-", dir=instance_dir)
+                tmp = Path(temp_name)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        handle.write(new_text); handle.flush(); os.fsync(handle.fileno())
+                    tmp.chmod(0o660)
+                    if os.name != "nt" and os.geteuid() == 0:
+                        info = instance_dir.stat()
+                        os.chown(tmp, info.st_uid, info.st_gid)
+                    tmp.replace(config_path)
+                finally:
+                    tmp.unlink(missing_ok=True)
+                result["backup"] = str(backup_dir / "config.ini") if (backup_dir / "config.ini").exists() else None
+                print(f"ซ่อม config ที่ migrate แล้ว: {instance_dir.name}")
+            elif result.get("failed"):
+                print(f"WARNING: ซ่อม {instance_dir.name} อัตโนมัติไม่ได้: {result.get('reason')}", file=sys.stderr)
+            results.append(result)
 
     report = {
         "repair": "previously migrated TTMediaBot instances -> current SNTalkBot config schema",
@@ -701,7 +796,9 @@ def main() -> None:
     if not template.is_file():
         fail(f"SNTalkBot config template not found: {template}")
     if args.repair_existing:
-        repair_existing_migrated(template, dest_root, args.repair_name)
+        results = repair_existing_migrated(template, dest_root, args.repair_name)
+        if any(row.get("failed") for row in results):
+            fail("Config repair blocked; connection values were kept. Restore a valid config before restart/update.")
         return
     if not args.source:
         fail("--source is required unless --repair-existing is used")
@@ -776,10 +873,10 @@ def main() -> None:
             fail("Migration cancelled by user.", 4)
 
     dest_root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     backup_root = dest_root / ".migration-backups" / stamp
     staging_root = dest_root / ".migration-staging" / stamp
-    report_dir = dest_root / ".migration-reports"
+    report_dir = dest_root / "Document" / "MigrationReports"
     report_dir.mkdir(parents=True, exist_ok=True)
     report_dir.chmod(0o700)
     staging_root.mkdir(parents=True, exist_ok=False)
@@ -824,7 +921,8 @@ def main() -> None:
                 ]),
                 encoding="utf-8",
             )
-            (staged / "MIGRATED_FROM_TTMEDIABOT.txt").write_text(
+            (staged / "Document").mkdir(exist_ok=True)
+            (staged / "Document" / "MIGRATED_FROM_TTMEDIABOT.txt").write_text(
                 "This instance was migrated from legacy TTMediaBot Docker Helper.\n"
                 f"Source: {source_dir}\n"
                 "The original source directory was intentionally left unchanged as a backup.\n"
@@ -834,7 +932,7 @@ def main() -> None:
             (staged / "config.ini").chmod(0o640)
             (staged / "cookies.txt").chmod(0o640)
             (staged / "instance.conf").chmod(0o640)
-            (staged / "MIGRATED_FROM_TTMEDIABOT.txt").chmod(0o640)
+            (staged / "Document" / "MIGRATED_FROM_TTMEDIABOT.txt").chmod(0o640)
             limits_file = staged / "limits.conf"
             if limits_file.exists():
                 limits_file.chmod(0o640)

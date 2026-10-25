@@ -15,9 +15,9 @@ for cmd in expected:
     need(re.search(rf'^\s*ttuhelper\s+{re.escape(cmd)}(?:\s|$)', sh, re.M) is not None, f'help advertises {cmd}')
 need(len(expected)==22, 'TTUHelper public command catalog contains 22 commands')
 # Cookie safety
-for token in ('validate_cookie_file()', '#HttpOnly_', 'install -o 10001 -g 10001 -m 0640', 'Restart the instance to force yt-dlp to reload'):
+for token in ('validate_cookie_file()', '#HttpOnly_', 'install -o 10001 -g 10001 -m 0640', 'Current bot builds reload the latest cookies'):
     need(token in sh, f'cookie safety behavior present: {token}')
-need((ROOT/'YOUTUBE_COOKIES_TH.md').is_file(), 'cookie guide is packaged')
+need((ROOT/'Document/YOUTUBE_COOKIES_TH.md').is_file(), 'cookie guide is packaged')
 need('copy_bundled_default_cookies()' in sh and '/app/defaults/cookies.txt' in sh, 'new Player/Full instances copy bundled default cookies from the selected Docker image')
 need('if [[ "$player_enabled" == "True" ]]; then' in sh and 'copy_bundled_default_cookies "$tmp/cookies.txt"' in sh, 'Server Manager-only instances do not require the Player cookie bootstrap')
 need('cookies.txt' in (ROOT/'.gitignore').read_text(encoding='utf-8'), 'cookies are ignored by Git')
@@ -89,7 +89,7 @@ try:
         good=good and cfg.get('bot','default_channel')=='8'
         good=good and not (dest/'LegacyBot'/'limits.conf').exists()
         good=good and not (dest/'LegacyBot'/'legacy-config.json').exists()
-        reports=list((dest/'.migration-reports').glob('*.json'))
+        reports=list((dest/'Document'/'MigrationReports').glob('*.json'))
         report_text=reports[0].read_text(encoding='utf-8') if reports else ''
         good=good and all(x in report_text for x in ('general.legacy_only','general.cache_file_name','sound_devices.output_device','player.volume_fading_interval','teamtalk.users.banned_users','teamtalk.event_handling.load_event_handlers','services.vk.token','logger.file_name','shortening.service'))
         good=good and all(secret not in report_text for secret in ('unsupported-secret','legacy-secret','vk-secret','yam-secret'))
@@ -101,7 +101,7 @@ try:
 
         # Already-migrated config repair regression.
         migrated=dest/'LegacyBot'; current=configparser.ConfigParser(interpolation=None); current.read(migrated/'config.ini',encoding='utf-8')
-        current.set('server','tcp_port','10333.0'); current.set('server','udp_port','70000')
+        current.set('server','tcp_port','10333.0'); current.set('server','udp_port','10333')
         current.set('server','password','do-not-log-this-secret')
         current.set('features','server_management_enabled','nonsense')
         current.set('playback','default_volume','55.0'); current.set('playback','max_volume','wrong')
@@ -111,16 +111,16 @@ try:
         with (migrated/'config.ini').open('w',encoding='utf-8') as fh: current.write(fh)
         repair=subprocess.run([sys.executable,str(ROOT/'tools/migrate_ttmediabot.py'),'--repair-existing','--dest-root',str(dest),'--template',str(template)],capture_output=True,text=True,timeout=20)
         fixed=configparser.ConfigParser(interpolation=None); fixed.read(migrated/'config.ini',encoding='utf-8')
-        repair_reports=sorted((dest/'.migration-reports').glob('ttmediabot-repair-*.json'))
+        repair_reports=sorted((dest/'Document'/'MigrationReports').glob('ttmediabot-repair-*.json'))
         repair_text=repair_reports[-1].read_text(encoding='utf-8') if repair_reports else ''
         repair_good=repair.returncode==0 and fixed.getint('server','tcp_port')==10333 and fixed.getint('server','udp_port')==10333
         repair_good=repair_good and fixed.get('server','password')=='do-not-log-this-secret' and fixed.getboolean('features','server_management_enabled') is False
         repair_good=repair_good and fixed.getint('playback','default_volume')==55 and fixed.getint('playback','max_volume')==150 and fixed.getint('playback','seek_step')==5 and fixed.getboolean('playback','send_channel_messages') is True
         repair_good=repair_good and fixed.get('bot','blocked_commands')=='' and fixed.get('accounts','authorized_users')=='alice,bob'
-        repair_good=repair_good and not fixed.has_option('playback','legacy_stale_key') and not fixed.has_section('legacy_extra')
+        repair_good=repair_good and fixed.has_option('playback','legacy_stale_key') and fixed.has_section('legacy_extra')
         repair_good=repair_good and bool(list((dest/'.migration-repair-backups').rglob('config.ini'))) and 'do-not-log-this-secret' not in repair_text and 'secret-legacy-extra' not in repair_text
-        repair_good=repair_good and 'playback.default_volume' in repair_text and 'playback.max_volume' in repair_text and 'playback.legacy_stale_key' in repair_text
-        need(repair_good, 'previously migrated configs auto-repair against current schema with backup, safe coercion/defaults and secret-free report')
+        repair_good=repair_good and 'playback.default_volume' in repair_text and 'playback.max_volume' in repair_text 
+        need(repair_good, 'migrated config repair preserves identity and unknown settings, coerces safe values, and writes a secret-free report')
         if not repair_good:
             print('[DETAIL] repair stdout:',repair.stdout); print('[DETAIL] repair stderr:',repair.stderr); print('[DETAIL] repair report:',repair_text)
 except Exception as exc:
@@ -248,7 +248,7 @@ if os.name != 'nt' and bash:
                 sock=socket.socket(); sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]; sock.close()
                 token='token-'+name; counts[name]=3
                 d=bots/name; d.mkdir()
-                (d/'config.ini').write_text('[features]\nplayer_enabled=True\nserver_management_enabled=False\n',encoding='utf-8')
+                (d/'config.ini').write_text('[server]\naddress=example.test\ntcp_port=10333\nudp_port=10333\nusername=fixture\n[features]\nplayer_enabled=True\nserver_management_enabled=False\n',encoding='utf-8')
                 (d/'instance.conf').write_text(f'mode=player\napi_port={port}\napi_token={token}\napi_bind=127.0.0.1\n',encoding='utf-8')
                 con=sqlite3.connect(d/'state.sqlite3'); con.execute('CREATE TABLE queue_entries(seq INTEGER PRIMARY KEY,payload TEXT NOT NULL)'); con.executemany('INSERT INTO queue_entries(seq,payload) VALUES(?,?)',[(1024*i,'{}') for i in range(1,4)]); con.commit(); con.close()
                 srv=ThreadingHTTPServer(('127.0.0.1',port),Handler); srv.name=name; srv.token=token
