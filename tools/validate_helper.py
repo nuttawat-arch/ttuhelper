@@ -276,6 +276,18 @@ esac
 exit 0
 ''',encoding='utf-8'); fake.chmod(0o755)
             sysctl=bindir/'systemctl'; sysctl.write_text('#!/usr/bin/env bash\n[[ "${1:-}" == is-active ]] && exit 0\nexit 0\n',encoding='utf-8'); sysctl.chmod(0o755)
+            # This test owns temporary fixtures and verifies update ordering,
+            # not host UID/GID mapping. A namespaced/rootless CI filesystem may
+            # reject real chown despite a valid update procedure.
+            fake_chown=bindir/'chown'; fake_chown.write_text('#!/usr/bin/env bash\nexit 0\n',encoding='utf-8'); fake_chown.chmod(0o755)
+            fake_install=bindir/'install'
+            fake_install.write_text('''#!/usr/bin/env bash
+args=()
+while (($#)); do
+  case "$1" in -o|-g) shift 2;; *) args+=("$1"); shift;; esac
+done
+exec /usr/bin/install "${args[@]}"
+''',encoding='utf-8'); fake_install.chmod(0o755)
             env=os.environ.copy(); env.update({
                 'PATH':str(bindir)+os.pathsep+env.get('PATH',''),
                 'TTU_BOTS_ROOT':str(bots),'TTU_TEST_MARKER':str(marker_file),
